@@ -1,0 +1,18 @@
+# Sakila 연습용 MySQL 8 컨테이너
+# 최초 기동 시 ./sakila 의 SQL 파일이 이름순으로 자동 실행됨
+services:
+  mysql:
+    image: mysql:8.0
+    container_name: sakila-mysql
+    environment:
+      MYSQL_ROOT_PASSWORD: sakila
+      TZ: Asia/Seoul
+    command: --character-set-server=utf8mb4 --collation-server=utf8mb4_0900_ai_ci
+    ports:
+      - "3307:3306"
+    volumes:
+      - ./sakila:/docker-entrypoint-initdb.d:ro
+      - sakila-data:/var/lib/mysql
+
+volumes:
+  sakila-data:

@@ -1,0 +1,61 @@
+# 001. 장르별 영화 수
+
+**난이도:** ⭐ 하
+
+## 문제
+
+각 장르(category)별로 등록된 영화 수를 구하세요.
+
+- 출력 컬럼: `category`(장르명), `film_count`(영화 수)
+- 영화 수가 많은 순으로 정렬하고, 같으면 장르명 오름차순
+
+**사용 테이블:** `category`, `film_category`
+
+## 풀이 쿼리
+
+```sql
+SELECT c.name      AS category,
+       COUNT(*)    AS film_count
+FROM category c
+JOIN film_category fc ON fc.category_id = c.category_id
+GROUP BY c.category_id, c.name
+ORDER BY film_count DESC, category;
+```
+
+## 실행 결과
+
+| category | film_count |
+|---|---|
+| Sports | 74 |
+| Foreign | 73 |
+| Family | 69 |
+| Documentary | 68 |
+| Animation | 66 |
+| Action | 64 |
+| New | 63 |
+| Drama | 62 |
+| Games | 61 |
+| Sci-Fi | 61 |
+| Children | 60 |
+| Comedy | 58 |
+| Classics | 57 |
+| Travel | 57 |
+| Horror | 56 |
+| Music | 51 |
+
+> 총 16행
+
+## 분석
+
+### 핵심 개념
+- `JOIN` + `GROUP BY` + `COUNT(*)` 의 가장 기본 형태입니다.
+- `film_category` 는 영화와 장르의 **연결 테이블**입니다. Sakila 에서는 영화 1편당 장르가 정확히 1개라 합계가 1,000편으로 딱 떨어집니다.
+- `GROUP BY c.category_id, c.name` 처럼 PK 를 함께 묶어두면, 이름이 같은 장르가 생겨도 안전하고 `ONLY_FULL_GROUP_BY` 모드에서도 문제가 없습니다.
+
+### 결과 해석
+- 16개 장르 중 **Sports(74편)** 가 가장 많고 **Music(51편)** 이 가장 적습니다.
+- 최다/최소 차이가 23편뿐이라, 샘플 데이터가 장르별로 비교적 고르게 생성되었음을 알 수 있습니다.
+- Games 와 Sci-Fi(61편), Classics 와 Travel(57편)은 동수라 2차 정렬 기준(장르명)이 결과 순서를 결정합니다. **정렬 기준을 끝까지 명시해야 결과가 매번 같게 나온다**는 점을 기억하세요.
+
+### 더 해보기
+- `film_category` 를 `LEFT JOIN` 으로 바꾸면 영화가 없는 장르도 0으로 표시할 수 있습니다 (`COUNT(fc.film_id)` 로 변경 필요).
