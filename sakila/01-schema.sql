@@ -1,18 +1,19 @@
+-- Sakila Spatial Sample Database Schema
+-- Version 0.9
 
--- Sakila Sample Database Schema
--- Version 0.8
-
--- Copyright (c) 2006, MySQL AB
+-- Copyright (c) 2014, Oracle Corporation
 -- All rights reserved.
 
 -- Redistribution and use in source and binary forms, with or without modification, are permitted provided that the following conditions are met:
 
 --  * Redistributions of source code must retain the above copyright notice, this list of conditions and the following disclaimer.
 --  * Redistributions in binary form must reproduce the above copyright notice, this list of conditions and the following disclaimer in the documentation and/or other materials provided with the distribution.
---  * Neither the name of MySQL AB nor the names of its contributors may be used to endorse or promote products derived from this software without specific prior written permission.
+--  * Neither the name of Oracle Corporation nor the names of its contributors may be used to endorse or promote products derived from this software without specific prior written permission.
 
 -- THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
+-- Modified in September 2015 by Giuseppe Maxia
+-- The schema and data can now be loaded by any MySQL 5.x version.
 
 SET @OLD_UNIQUE_CHECKS=@@UNIQUE_CHECKS, UNIQUE_CHECKS=0;
 SET @OLD_FOREIGN_KEY_CHECKS=@@FOREIGN_KEY_CHECKS, FOREIGN_KEY_CHECKS=0;
@@ -27,7 +28,7 @@ USE sakila;
 --
 
 CREATE TABLE actor (
-  actor_id INT UNSIGNED NOT NULL AUTO_INCREMENT,
+  actor_id SMALLINT UNSIGNED NOT NULL AUTO_INCREMENT,
   first_name VARCHAR(45) NOT NULL,
   last_name VARCHAR(45) NOT NULL,
   last_update TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
@@ -40,16 +41,18 @@ CREATE TABLE actor (
 --
 
 CREATE TABLE address (
-  address_id INT UNSIGNED NOT NULL AUTO_INCREMENT,
+  address_id SMALLINT UNSIGNED NOT NULL AUTO_INCREMENT,
   address VARCHAR(50) NOT NULL,
   address2 VARCHAR(50) DEFAULT NULL,
   district VARCHAR(20) NOT NULL,
-  city_id INT UNSIGNED NOT NULL,
+  city_id SMALLINT UNSIGNED NOT NULL,
   postal_code VARCHAR(10) DEFAULT NULL,
   phone VARCHAR(20) NOT NULL,
+  /*!50705 location GEOMETRY NOT NULL,*/
   last_update TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   PRIMARY KEY  (address_id),
   KEY idx_fk_city_id (city_id),
+  /*!50705 SPATIAL KEY `idx_location` (location),*/
   CONSTRAINT `fk_address_city` FOREIGN KEY (city_id) REFERENCES city (city_id) ON DELETE RESTRICT ON UPDATE CASCADE
 )ENGINE=InnoDB DEFAULT CHARSET=utf8;
 
@@ -58,7 +61,7 @@ CREATE TABLE address (
 --
 
 CREATE TABLE category (
-  category_id INT UNSIGNED NOT NULL AUTO_INCREMENT,
+  category_id TINYINT UNSIGNED NOT NULL AUTO_INCREMENT,
   name VARCHAR(25) NOT NULL,
   last_update TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   PRIMARY KEY  (category_id)
@@ -69,9 +72,9 @@ CREATE TABLE category (
 --
 
 CREATE TABLE city (
-  city_id INT UNSIGNED NOT NULL AUTO_INCREMENT,
+  city_id SMALLINT UNSIGNED NOT NULL AUTO_INCREMENT,
   city VARCHAR(50) NOT NULL,
-  country_id INT UNSIGNED NOT NULL,
+  country_id SMALLINT UNSIGNED NOT NULL,
   last_update TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   PRIMARY KEY  (city_id),
   KEY idx_fk_country_id (country_id),
@@ -83,7 +86,7 @@ CREATE TABLE city (
 --
 
 CREATE TABLE country (
-  country_id INT UNSIGNED NOT NULL AUTO_INCREMENT,
+  country_id SMALLINT UNSIGNED NOT NULL AUTO_INCREMENT,
   country VARCHAR(50) NOT NULL,
   last_update TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   PRIMARY KEY  (country_id)
@@ -94,12 +97,12 @@ CREATE TABLE country (
 --
 
 CREATE TABLE customer (
-  customer_id INT UNSIGNED NOT NULL AUTO_INCREMENT,
-  store_id INT UNSIGNED NOT NULL,
+  customer_id SMALLINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  store_id TINYINT UNSIGNED NOT NULL,
   first_name VARCHAR(45) NOT NULL,
   last_name VARCHAR(45) NOT NULL,
   email VARCHAR(50) DEFAULT NULL,
-  address_id INT UNSIGNED NOT NULL,
+  address_id SMALLINT UNSIGNED NOT NULL,
   active BOOLEAN NOT NULL DEFAULT TRUE,
   create_date DATETIME NOT NULL,
   last_update TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
@@ -116,12 +119,12 @@ CREATE TABLE customer (
 --
 
 CREATE TABLE film (
-  film_id INT UNSIGNED NOT NULL AUTO_INCREMENT,
+  film_id SMALLINT UNSIGNED NOT NULL AUTO_INCREMENT,
   title VARCHAR(255) NOT NULL,
   description TEXT DEFAULT NULL,
   release_year YEAR DEFAULT NULL,
-  language_id INT UNSIGNED NOT NULL,
-  original_language_id INT UNSIGNED DEFAULT NULL,
+  language_id TINYINT UNSIGNED NOT NULL,
+  original_language_id TINYINT UNSIGNED DEFAULT NULL,
   rental_duration TINYINT UNSIGNED NOT NULL DEFAULT 3,
   rental_rate DECIMAL(4,2) NOT NULL DEFAULT 4.99,
   length SMALLINT UNSIGNED DEFAULT NULL,
@@ -142,8 +145,8 @@ CREATE TABLE film (
 --
 
 CREATE TABLE film_actor (
-  actor_id INT UNSIGNED NOT NULL,
-  film_id INT UNSIGNED NOT NULL,
+  actor_id SMALLINT UNSIGNED NOT NULL,
+  film_id SMALLINT UNSIGNED NOT NULL,
   last_update TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   PRIMARY KEY  (actor_id,film_id),
   KEY idx_fk_film_id (`film_id`),
@@ -156,8 +159,8 @@ CREATE TABLE film_actor (
 --
 
 CREATE TABLE film_category (
-  film_id INT UNSIGNED NOT NULL,
-  category_id INT UNSIGNED NOT NULL,
+  film_id SMALLINT UNSIGNED NOT NULL,
+  category_id TINYINT UNSIGNED NOT NULL,
   last_update TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   PRIMARY KEY (film_id, category_id),
   CONSTRAINT fk_film_category_film FOREIGN KEY (film_id) REFERENCES film (film_id) ON DELETE RESTRICT ON UPDATE CASCADE,
@@ -169,12 +172,15 @@ CREATE TABLE film_category (
 --
 
 CREATE TABLE film_text (
-  film_id INT NOT NULL,
+  film_id SMALLINT NOT NULL,
   title VARCHAR(255) NOT NULL,
   description TEXT,
   PRIMARY KEY  (film_id),
   FULLTEXT KEY idx_title_description (title,description)
-)ENGINE=InnoDB DEFAULT CHARSET=utf8;
+)ENGINE=MyISAM DEFAULT CHARSET=utf8;
+
+-- After MySQL 5.6.10, InnoDB supports fulltext indexes
+/*!50610 ALTER TABLE film_text engine=InnoDB */;
 
 --
 -- Triggers for loading film_text from film
@@ -188,7 +194,7 @@ CREATE TRIGGER `ins_film` AFTER INSERT ON `film` FOR EACH ROW BEGIN
 
 
 CREATE TRIGGER `upd_film` AFTER UPDATE ON `film` FOR EACH ROW BEGIN
-    IF (old.title != new.title) or (old.description != new.description)
+    IF (old.title != new.title) OR (old.description != new.description) OR (old.film_id != new.film_id)
     THEN
         UPDATE film_text
             SET title=new.title,
@@ -210,9 +216,9 @@ DELIMITER ;
 --
 
 CREATE TABLE inventory (
-  inventory_id INT UNSIGNED NOT NULL AUTO_INCREMENT,
-  film_id INT UNSIGNED NOT NULL,
-  store_id INT UNSIGNED NOT NULL,
+  inventory_id MEDIUMINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  film_id SMALLINT UNSIGNED NOT NULL,
+  store_id TINYINT UNSIGNED NOT NULL,
   last_update TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   PRIMARY KEY  (inventory_id),
   KEY idx_fk_film_id (film_id),
@@ -226,7 +232,7 @@ CREATE TABLE inventory (
 --
 
 CREATE TABLE language (
-  language_id INT UNSIGNED NOT NULL AUTO_INCREMENT,
+  language_id TINYINT UNSIGNED NOT NULL AUTO_INCREMENT,
   name CHAR(20) NOT NULL,
   last_update TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   PRIMARY KEY (language_id)
@@ -237,9 +243,9 @@ CREATE TABLE language (
 --
 
 CREATE TABLE payment (
-  payment_id INT UNSIGNED NOT NULL AUTO_INCREMENT,
-  customer_id INT UNSIGNED NOT NULL,
-  staff_id INT UNSIGNED NOT NULL,
+  payment_id SMALLINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  customer_id SMALLINT UNSIGNED NOT NULL,
+  staff_id TINYINT UNSIGNED NOT NULL,
   rental_id INT DEFAULT NULL,
   amount DECIMAL(5,2) NOT NULL,
   payment_date DATETIME NOT NULL,
@@ -260,10 +266,10 @@ CREATE TABLE payment (
 CREATE TABLE rental (
   rental_id INT NOT NULL AUTO_INCREMENT,
   rental_date DATETIME NOT NULL,
-  inventory_id INT UNSIGNED NOT NULL,
-  customer_id INT UNSIGNED NOT NULL,
+  inventory_id MEDIUMINT UNSIGNED NOT NULL,
+  customer_id SMALLINT UNSIGNED NOT NULL,
   return_date DATETIME DEFAULT NULL,
-  staff_id INT UNSIGNED NOT NULL,
+  staff_id TINYINT UNSIGNED NOT NULL,
   last_update TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   PRIMARY KEY (rental_id),
   UNIQUE KEY  (rental_date,inventory_id,customer_id),
@@ -280,13 +286,13 @@ CREATE TABLE rental (
 --
 
 CREATE TABLE staff (
-  staff_id INT UNSIGNED NOT NULL AUTO_INCREMENT,
+  staff_id TINYINT UNSIGNED NOT NULL AUTO_INCREMENT,
   first_name VARCHAR(45) NOT NULL,
   last_name VARCHAR(45) NOT NULL,
-  address_id INT UNSIGNED NOT NULL,
-  picture MEDIUMBLOB DEFAULT NULL,
+  address_id SMALLINT UNSIGNED NOT NULL,
+  picture BLOB DEFAULT NULL,
   email VARCHAR(50) DEFAULT NULL,
-  store_id INT UNSIGNED NOT NULL,
+  store_id TINYINT UNSIGNED NOT NULL,
   active BOOLEAN NOT NULL DEFAULT TRUE,
   username VARCHAR(16) NOT NULL,
   password VARCHAR(40) BINARY DEFAULT NULL,
@@ -303,9 +309,9 @@ CREATE TABLE staff (
 --
 
 CREATE TABLE store (
-  store_id INT UNSIGNED NOT NULL AUTO_INCREMENT,
-  manager_staff_id INT UNSIGNED NOT NULL,
-  address_id INT UNSIGNED NOT NULL,
+  store_id TINYINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  manager_staff_id TINYINT UNSIGNED NOT NULL,
+  address_id SMALLINT UNSIGNED NOT NULL,
   last_update TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   PRIMARY KEY  (store_id),
   UNIQUE KEY idx_unique_manager (manager_staff_id),
@@ -336,7 +342,7 @@ SELECT film.film_id AS FID, film.title AS title, film.description AS description
 FROM category LEFT JOIN film_category ON category.category_id = film_category.category_id LEFT JOIN film ON film_category.film_id = film.film_id
         JOIN film_actor ON film.film_id = film_actor.film_id
 	JOIN actor ON film_actor.actor_id = actor.actor_id
-GROUP BY film.film_id, film.title, film.description, film.rental_rate, film.length, film.rating, category.name;
+GROUP BY film.film_id, category.name;
 
 --
 -- View structure for view `nicer_but_slower_film_list`
@@ -351,7 +357,7 @@ SELECT film.film_id AS FID, film.title AS title, film.description AS description
 FROM category LEFT JOIN film_category ON category.category_id = film_category.category_id LEFT JOIN film ON film_category.film_id = film.film_id
         JOIN film_actor ON film.film_id = film_actor.film_id
 	JOIN actor ON film_actor.actor_id = actor.actor_id
-GROUP BY film.film_id, film.title, film.description, film.rental_rate, film.length, film.rating, category.name;
+GROUP BY film.film_id, category.name;
 
 --
 -- View structure for view `staff_list`
@@ -478,7 +484,7 @@ proc: BEGIN
         Create a temporary storage area for
         Customer IDs.
     */
-    CREATE TEMPORARY TABLE tmpCustomer (customer_id INT UNSIGNED NOT NULL PRIMARY KEY);
+    CREATE TEMPORARY TABLE tmpCustomer (customer_id SMALLINT UNSIGNED NOT NULL PRIMARY KEY);
 
     /*
         Find all customers meeting the

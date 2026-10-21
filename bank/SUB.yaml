@@ -1,0 +1,916 @@
+# 서브쿼리: 스칼라 · IN · EXISTS · 상관 · 파생 테이블 · ANY/ALL · LATERAL
+- id: SUB-001
+  title: 평균보다 긴 영화
+  level: 1
+  tags: [스칼라 서브쿼리, WHERE]
+  question: |
+    상영 시간이 **전체 평균보다 긴** 영화의 수를 구하세요.
+
+    - 출력: `films`
+
+    **사용 테이블:** `film`
+  solution: |
+    SELECT COUNT(*) AS films
+    FROM film
+    WHERE length > (SELECT AVG(length) FROM film);
+  note: |
+    `WHERE length > AVG(length)` 는 오류입니다. WHERE 는 행 하나씩 검사하는데 AVG 는 전체를 봐야 하기 때문입니다.
+    **값 하나(1행 1열)** 를 돌려주는 서브쿼리를 *스칼라 서브쿼리*라 하며, 상수처럼 쓸 수 있습니다.
+
+- id: SUB-002
+  title: 가장 비싼 영화
+  level: 1
+  tags: [스칼라 서브쿼리, MAX]
+  question: |
+    교체 비용(`replacement_cost`)이 **최댓값**인 영화의 `title`, `replacement_cost` 를 `title` 순으로 조회하세요.
+
+    **사용 테이블:** `film`
+  solution: |
+    SELECT title, replacement_cost
+    FROM film
+    WHERE replacement_cost = (SELECT MAX(replacement_cost) FROM film)
+    ORDER BY title;
+  note: |
+    `ORDER BY replacement_cost DESC LIMIT 1` 은 **동점인 영화 중 하나만** 돌려줍니다. 최댓값과 같은 모든 행이 필요하면 서브쿼리 방식이 정확합니다.
+
+- id: SUB-003
+  title: 특정 배우의 출연작
+  level: 1
+  tags: [IN 서브쿼리]
+  question: |
+    배우 `PENELOPE GUINESS` 가 출연한 영화의 `title` 을 `title` 순으로 조회하세요. 조인 대신 `IN` 서브쿼리를 사용하세요.
+
+    **사용 테이블:** `film`, `film_actor`, `actor`
+  solution: |
+    SELECT title
+    FROM film
+    WHERE film_id IN (
+        SELECT fa.film_id
+        FROM film_actor fa
+        JOIN actor a ON a.actor_id = fa.actor_id
+        WHERE a.first_name = 'PENELOPE' AND a.last_name = 'GUINESS'
+    )
+    ORDER BY title;
+  note: |
+    `IN (서브쿼리)` 는 **여러 행 1열**을 돌려주는 서브쿼리와 함께 씁니다.
+    조인과 달리 서브쿼리 쪽에 중복이 있어도 바깥 행이 **중복되지 않는다**는 장점이 있습니다 (세미 조인).
+
+- id: SUB-004
+  title: 장르로 영화 찾기
+  level: 1
+  tags: [IN 서브쿼리, 중첩]
+  question: |
+    장르가 `Music` 인 영화 중 등급이 `G` 인 영화의 `film_id`, `title` 을 `film_id` 순으로 조회하세요.
+    `IN` 서브쿼리를 **두 번 중첩**해서 풀어 보세요.
+
+    **사용 테이블:** `film`, `film_category`, `category`
+  solution: |
+    SELECT film_id, title
+    FROM film
+    WHERE rating = 'G'
+      AND film_id IN (
+          SELECT film_id
+          FROM film_category
+          WHERE category_id IN (SELECT category_id FROM category WHERE name = 'Music')
+      )
+    ORDER BY film_id;
+  note: |
+    서브쿼리는 여러 겹으로 중첩할 수 있습니다. 안쪽부터 읽으면 이해가 쉽습니다: Music 의 id → 그 장르의 영화 id → 영화.
+
+- id: SUB-005
+  title: 한 번도 대여하지 않은 고객
+  level: 2
+  tags: [NOT IN, NOT EXISTS]
+  question: |
+    한 번도 대여하지 않은 고객의 수를 구하세요.
+
+    - 출력: `customers`
+
+    **사용 테이블:** `customer`, `rental`
+  solution: |
+    SELECT COUNT(*) AS customers
+    FROM customer c
+    WHERE NOT EXISTS (SELECT 1 FROM rental r WHERE r.customer_id = c.customer_id);
+  note: |
+    결과는 0명입니다. 모든 고객이 최소 1회는 대여했습니다 — "0" 도 검증된 답입니다.
+    `NOT IN (SELECT customer_id FROM rental)` 로도 같은 답이 나오지만, 서브쿼리 결과에 NULL 이 하나라도 섞이면 **결과가 항상 0행**이 되는 함정이 있습니다(SUB-006 참고).
+
+- id: SUB-006
+  title: NOT IN 과 NULL 의 함정
+  level: 3
+  tags: [NOT IN, NULL, 함정]
+  question: |
+    영화의 **원어**(`film.original_language_id`)로 한 번도 쓰이지 않은 언어의 수를 두 가지 방법으로 구해 비교하세요.
+
+    - `not_in_cnt`: `NOT IN` 으로 구한 수
+    - `not_exists_cnt`: `NOT EXISTS` 로 구한 수
+
+    **사용 테이블:** `language`, `film`
+  solution: |
+    SELECT
+        (SELECT COUNT(*) FROM language l
+          WHERE l.language_id NOT IN (SELECT f.original_language_id FROM film f)) AS not_in_cnt,
+        (SELECT COUNT(*) FROM language l
+          WHERE NOT EXISTS (SELECT 1 FROM film f WHERE f.original_language_id = l.language_id)) AS not_exists_cnt;
+  note: |
+    결과는 `0` 과 `6` 으로 다릅니다! `original_language_id` 는 **1,000편 모두 NULL** 입니다.
+    `x NOT IN (NULL, NULL, ...)` 은 `x <> NULL AND ...` 이고, `x <> NULL` 은 항상 NULL(알 수 없음)이라 **어떤 행도 참이 될 수 없습니다.**
+    반면 `NOT EXISTS` 는 "일치하는 행이 없다" 를 그대로 판정해 6개 언어 모두를 돌려줍니다.
+    `NOT IN` 을 쓰려면 서브쿼리에 `WHERE ... IS NOT NULL` 을 꼭 넣거나, 처음부터 `NOT EXISTS` 를 쓰세요.
+
+- id: SUB-007
+  title: SELECT 절의 스칼라 서브쿼리
+  level: 2
+  tags: [스칼라 서브쿼리, SELECT 절]
+  question: |
+    장르별로 영화 수와 **전체 영화 대비 비율**(%)을 구하세요. 전체 영화 수는 SELECT 절 서브쿼리로 구합니다.
+
+    - 출력: `category`, `films`, `pct`(소수 1자리) — `films` 내림차순, `category` 순
+
+    **사용 테이블:** `category`, `film_category`, `film`
+  solution: |
+    SELECT c.name AS category,
+           COUNT(*) AS films,
+           ROUND(100 * COUNT(*) / (SELECT COUNT(*) FROM film), 1) AS pct
+    FROM category c
+    JOIN film_category fc ON fc.category_id = c.category_id
+    GROUP BY c.category_id, c.name
+    ORDER BY films DESC, category;
+  note: |
+    바깥 쿼리와 무관한 스칼라 서브쿼리는 **한 번만 실행**되고 결과가 재사용됩니다. 윈도우 함수 `SUM(COUNT(*)) OVER ()` 로도 같은 값을 구할 수 있습니다.
+
+- id: SUB-008
+  title: 고객별 최근 대여일 (상관 서브쿼리)
+  level: 2
+  tags: [상관 서브쿼리, SELECT 절]
+  question: |
+    고객 1~10번의 `customer_id`, 이름 `name`, 가장 최근 대여일 `last_rental` 을 SELECT 절 상관 서브쿼리로 구하세요. `customer_id` 순.
+
+    **사용 테이블:** `customer`, `rental`
+  solution: |
+    SELECT c.customer_id,
+           CONCAT(c.first_name, ' ', c.last_name) AS name,
+           (SELECT MAX(r.rental_date) FROM rental r WHERE r.customer_id = c.customer_id) AS last_rental
+    FROM customer c
+    WHERE c.customer_id <= 10
+    ORDER BY c.customer_id;
+  note: |
+    서브쿼리 안에서 바깥 테이블(`c.customer_id`)을 참조하면 **상관 서브쿼리**입니다. 개념적으로 바깥 행마다 한 번씩 실행됩니다.
+    값 하나만 필요할 때는 GROUP BY 조인보다 읽기 쉽지만, 여러 값(MAX, COUNT, SUM …)이 필요하면 서브쿼리가 여러 번 돌아 비효율적입니다.
+
+- id: SUB-009
+  title: 장르 평균보다 긴 영화 (상관 서브쿼리)
+  level: 3
+  tags: [상관 서브쿼리, WHERE, 그룹 평균 비교]
+  question: |
+    **자기 장르의 평균 상영 시간보다** 긴 영화의 수를 장르별로 구하세요.
+
+    - 출력: `category`, `films_above_avg` — `category` 순
+
+    **사용 테이블:** `film`, `film_category`, `category`
+  solution: |
+    SELECT c.name AS category, COUNT(*) AS films_above_avg
+    FROM film f
+    JOIN film_category fc ON fc.film_id     = f.film_id
+    JOIN category c       ON c.category_id  = fc.category_id
+    WHERE f.length > (
+        SELECT AVG(f2.length)
+        FROM film f2
+        JOIN film_category fc2 ON fc2.film_id = f2.film_id
+        WHERE fc2.category_id = fc.category_id
+    )
+    GROUP BY c.category_id, c.name
+    ORDER BY category;
+  note: |
+    "전체 평균"이 아니라 **"내가 속한 그룹의 평균"** 과 비교할 때 상관 서브쿼리를 씁니다.
+    같은 결과를 파생 테이블(장르별 평균을 미리 계산 후 조인)이나 윈도우 함수 `AVG() OVER (PARTITION BY ...)` 로도 낼 수 있으니 세 방법을 모두 써 보세요.
+
+- id: SUB-010
+  title: 장르별 가장 긴 영화
+  level: 3
+  tags: [상관 서브쿼리, 그룹별 최댓값]
+  question: |
+    장르별로 상영 시간이 가장 긴 영화(동점이면 모두)를 구하세요.
+
+    - 출력: `category`, `title`, `length` — `category`, `title` 순
+
+    **사용 테이블:** `film`, `film_category`, `category`
+  solution: |
+    SELECT c.name AS category, f.title, f.length
+    FROM film f
+    JOIN film_category fc ON fc.film_id    = f.film_id
+    JOIN category c       ON c.category_id = fc.category_id
+    WHERE f.length = (
+        SELECT MAX(f2.length)
+        FROM film f2
+        JOIN film_category fc2 ON fc2.film_id = f2.film_id
+        WHERE fc2.category_id = fc.category_id
+    )
+    ORDER BY category, f.title;
+  note: |
+    "그룹별 최댓값을 가진 **행 전체**"를 구하는 고전 문제(greatest-n-per-group)입니다.
+    `GROUP BY` 만으로는 MAX 값은 구해도 그 행의 다른 컬럼(title)을 정확히 가져올 수 없습니다.
+
+- id: SUB-011
+  title: EXISTS 로 존재 여부 확인
+  level: 2
+  tags: [EXISTS, 세미 조인]
+  question: |
+    **2006년에 대여 기록이 있는** 고객의 `customer_id`, `first_name`, `last_name` 을 `customer_id` 순으로 조회하세요.
+
+    **사용 테이블:** `customer`, `rental`
+  solution: |
+    SELECT c.customer_id, c.first_name, c.last_name
+    FROM customer c
+    WHERE EXISTS (
+        SELECT 1 FROM rental r
+        WHERE r.customer_id = c.customer_id
+          AND r.rental_date >= '2006-01-01'
+    )
+    ORDER BY c.customer_id;
+  note: |
+    `EXISTS` 는 서브쿼리가 **한 행이라도 돌려주면 참**입니다. 무엇을 SELECT 하는지는 상관없어서 관례적으로 `SELECT 1` 을 씁니다.
+    조인 + DISTINCT 보다 의도가 명확하고, 첫 행을 찾으면 바로 멈출 수 있어 효율적입니다.
+
+- id: SUB-012
+  title: 두 매장 모두에서 대여한 고객
+  level: 3
+  tags: [EXISTS, 복수 조건]
+  question: |
+    **1번 매장 재고와 2번 매장 재고를 모두** 빌려 본 고객의 수를 구하세요.
+
+    - 출력: `customers`
+
+    **사용 테이블:** `customer`, `rental`, `inventory`
+  solution: |
+    SELECT COUNT(*) AS customers
+    FROM customer c
+    WHERE EXISTS (SELECT 1 FROM rental r JOIN inventory i ON i.inventory_id = r.inventory_id
+                  WHERE r.customer_id = c.customer_id AND i.store_id = 1)
+      AND EXISTS (SELECT 1 FROM rental r JOIN inventory i ON i.inventory_id = r.inventory_id
+                  WHERE r.customer_id = c.customer_id AND i.store_id = 2);
+  note: |
+    "A 도 하고 B 도 한" 조건은 EXISTS 두 개를 AND 로 묶으면 됩니다.
+    `GROUP BY customer_id HAVING COUNT(DISTINCT store_id) = 2` 로도 풀 수 있습니다.
+
+- id: SUB-013
+  title: G 등급을 한 번도 빌리지 않은 고객
+  level: 3
+  tags: [NOT EXISTS, 조인 서브쿼리]
+  question: |
+    **G 등급 영화를 한 번도 빌리지 않은** 고객의 `customer_id`, 이름 `name`, 전체 대여 횟수 `rentals` 를 구하세요. `customer_id` 순.
+
+    **사용 테이블:** `customer`, `rental`, `inventory`, `film`
+  solution: |
+    SELECT c.customer_id,
+           CONCAT(c.first_name, ' ', c.last_name) AS name,
+           (SELECT COUNT(*) FROM rental r WHERE r.customer_id = c.customer_id) AS rentals
+    FROM customer c
+    WHERE NOT EXISTS (
+        SELECT 1
+        FROM rental r
+        JOIN inventory i ON i.inventory_id = r.inventory_id
+        JOIN film f      ON f.film_id      = i.film_id
+        WHERE r.customer_id = c.customer_id
+          AND f.rating = 'G'
+    )
+    ORDER BY c.customer_id;
+  note: |
+    NOT EXISTS 서브쿼리 안에서도 조인을 자유롭게 쓸 수 있습니다. 결과는 6명입니다.
+    "오직 X 만 빌린 고객" 은 "X 가 아닌 것을 빌린 적이 **없는** 고객" 으로 바꿔 같은 패턴으로 풀 수 있습니다.
+    (참고: G·PG 를 모두 피한 고객은 0명입니다.)
+
+- id: SUB-014
+  title: 모든 장르를 빌려 본 고객 (관계 나눗셈)
+  level: 5
+  tags: [NOT EXISTS 이중 부정, 관계 나눗셈]
+  question: |
+    **16개 장르를 모두** 한 번 이상 빌려 본 고객의 `customer_id`, `first_name`, `last_name` 을 `customer_id` 순으로 조회하세요.
+    `NOT EXISTS` 를 이중으로 사용하세요.
+
+    **사용 테이블:** `customer`, `category`, `rental`, `inventory`, `film_category`
+  solution: |
+    SELECT c.customer_id, c.first_name, c.last_name
+    FROM customer c
+    WHERE NOT EXISTS (
+        SELECT 1
+        FROM category cat
+        WHERE NOT EXISTS (
+            SELECT 1
+            FROM rental r
+            JOIN inventory i      ON i.inventory_id = r.inventory_id
+            JOIN film_category fc ON fc.film_id     = i.film_id
+            WHERE r.customer_id    = c.customer_id
+              AND fc.category_id   = cat.category_id
+        )
+    )
+    ORDER BY c.customer_id;
+  note: |
+    "모든 장르를 빌렸다" = "**빌리지 않은 장르가 존재하지 않는다**". 이중 부정이 관계 나눗셈의 정석 표현입니다.
+    같은 답을 `GROUP BY c.customer_id HAVING COUNT(DISTINCT fc.category_id) = (SELECT COUNT(*) FROM category)` 로도 구해 보고 비교해 보세요.
+
+- id: SUB-015
+  title: ANY 와 ALL
+  level: 3
+  tags: [ALL, ANY, 비교 연산자]
+  question: |
+    상영 시간이 **모든 `Children` 장르 영화보다 긴** 영화의 수 `longer_than_all` 과,
+    **어떤 `Children` 영화보다라도 긴**(=최소보다 긴) 영화의 수 `longer_than_any` 를 한 행으로 구하세요.
+
+    **사용 테이블:** `film`, `film_category`, `category`
+  solution: |
+    SELECT
+      (SELECT COUNT(*) FROM film
+        WHERE length > ALL (SELECT f.length FROM film f
+                            JOIN film_category fc ON fc.film_id = f.film_id
+                            JOIN category c ON c.category_id = fc.category_id
+                            WHERE c.name = 'Children')) AS longer_than_all,
+      (SELECT COUNT(*) FROM film
+        WHERE length > ANY (SELECT f.length FROM film f
+                            JOIN film_category fc ON fc.film_id = f.film_id
+                            JOIN category c ON c.category_id = fc.category_id
+                            WHERE c.name = 'Children')) AS longer_than_any;
+  note: |
+    `> ALL (...)` 은 `> MAX(...)`, `> ANY (...)` 는 `> MIN(...)` 과 같습니다. (`= ANY` 는 `IN` 과 같습니다.)
+    단, 서브쿼리가 **빈 집합**이면 `> ALL` 은 참, `> ANY` 는 거짓이 되고, NULL 이 섞이면 결과가 달라질 수 있어 MAX/MIN 이 더 예측 가능합니다.
+
+- id: SUB-016
+  title: 두 번째로 높은 결제 금액
+  level: 2
+  tags: [스칼라 서브쿼리, N번째 값]
+  question: |
+    결제 금액의 **두 번째로 큰 서로 다른 값**을 구하세요.
+
+    - 출력: `second_max`
+
+    **사용 테이블:** `payment`
+  solution: |
+    SELECT MAX(amount) AS second_max
+    FROM payment
+    WHERE amount < (SELECT MAX(amount) FROM payment);
+  note: |
+    "최댓값보다 작은 것 중 최댓값" 은 면접 단골 문제입니다.
+    N번째 값을 일반화하려면 `SELECT DISTINCT amount ... ORDER BY amount DESC LIMIT 1 OFFSET N-1` 이나 `DENSE_RANK()` 를 사용합니다.
+
+- id: SUB-017
+  title: 파생 테이블로 단계 나누기
+  level: 2
+  tags: [파생 테이블, FROM 절 서브쿼리]
+  question: |
+    고객별 결제 합계를 파생 테이블로 구한 뒤, 합계 구간별 고객 수를 구하세요.
+
+    - 구간: `VIP`(150 이상), `일반`(100 이상), `저활동`(100 미만)
+    - 출력: `segment`, `customers` — VIP → 일반 → 저활동 순
+
+    **사용 테이블:** `payment`
+  solution: |
+    SELECT segment, COUNT(*) AS customers
+    FROM (
+        SELECT customer_id,
+               CASE WHEN SUM(amount) >= 150 THEN 'VIP'
+                    WHEN SUM(amount) >= 100 THEN '일반'
+                    ELSE '저활동' END AS segment
+        FROM payment
+        GROUP BY customer_id
+    ) t
+    GROUP BY segment
+    ORDER BY FIELD(segment, 'VIP', '일반', '저활동');
+  note: |
+    `FIELD(값, 'a', 'b', 'c')` 는 값의 위치(1, 2, 3)를 돌려주므로 **임의의 정렬 순서**를 지정할 때 유용합니다 (MySQL 전용).
+
+- id: SUB-018
+  title: 파생 테이블과 조인
+  level: 3
+  tags: [파생 테이블, 집계 후 조인]
+  question: |
+    영화별 대여 횟수를 파생 테이블로 구한 뒤 `film` 과 조인해, 대여 횟수가 **자기 등급 평균보다 많은** 영화 수를 등급별로 구하세요.
+
+    - 출력: `rating`, `films`, `above_avg` — `rating` 순
+
+    **사용 테이블:** `film`, `inventory`, `rental`
+  solution: |
+    SELECT f.rating,
+           COUNT(*) AS films,
+           SUM(t.rentals > ra.avg_rentals) AS above_avg
+    FROM film f
+    JOIN (
+        SELECT i.film_id, COUNT(*) AS rentals
+        FROM rental r
+        JOIN inventory i ON i.inventory_id = r.inventory_id
+        GROUP BY i.film_id
+    ) t ON t.film_id = f.film_id
+    JOIN (
+        SELECT f2.rating, AVG(x.rentals) AS avg_rentals
+        FROM film f2
+        JOIN (
+            SELECT i.film_id, COUNT(*) AS rentals
+            FROM rental r
+            JOIN inventory i ON i.inventory_id = r.inventory_id
+            GROUP BY i.film_id
+        ) x ON x.film_id = f2.film_id
+        GROUP BY f2.rating
+    ) ra ON ra.rating = f.rating
+    GROUP BY f.rating
+    ORDER BY f.rating;
+  note: |
+    같은 파생 테이블(영화별 대여 횟수)이 두 번 등장합니다. 이렇게 반복되면 **CTE(`WITH`)** 로 한 번만 정의하는 것이 좋습니다 (CTE 유형 참고).
+    재고가 없는 영화(42편)는 INNER JOIN 으로 빠져 있다는 점도 확인하세요.
+
+- id: SUB-019
+  title: 행 서브쿼리
+  level: 3
+  tags: [행 서브쿼리, 튜플 비교]
+  question: |
+    가장 최근 대여(`rental_date` 최댓값)와 **같은 고객, 같은 날짜**에 이뤄진 모든 대여의 `rental_id`, `customer_id`, `rental_date` 를 조회하세요.
+    `(customer_id, DATE(rental_date))` 쌍을 행 서브쿼리로 비교하세요. `rental_id` 순.
+
+    **사용 테이블:** `rental`
+  solution: |
+    SELECT rental_id, customer_id, rental_date
+    FROM rental
+    WHERE (customer_id, DATE(rental_date)) = (
+        SELECT customer_id, DATE(rental_date)
+        FROM rental
+        ORDER BY rental_date DESC, rental_id DESC
+        LIMIT 1
+    )
+    ORDER BY rental_id;
+  note: |
+    `(a, b) = (SELECT x, y ...)` 처럼 **여러 컬럼을 한 번에 비교**할 수 있습니다. `(a, b) IN (SELECT x, y ...)` 도 가능합니다.
+    (MySQL 은 `IN` 서브쿼리 안에서 `LIMIT` 을 지원하지 않지만, `=` 비교의 스칼라/행 서브쿼리에서는 지원합니다.)
+
+- id: SUB-020
+  title: 고객별 첫 대여 영화
+  level: 3
+  tags: [파생 테이블 조인, 그룹별 첫 행]
+  question: |
+    고객 1~10번 각각의 **첫 대여**의 `customer_id`, `rental_date`, `title` 을 구하세요. `customer_id` 순.
+
+    **사용 테이블:** `rental`, `inventory`, `film`
+  solution: |
+    SELECT r.customer_id, r.rental_date, f.title
+    FROM rental r
+    JOIN inventory i ON i.inventory_id = r.inventory_id
+    JOIN film f      ON f.film_id      = i.film_id
+    JOIN (
+        SELECT customer_id, MIN(rental_date) AS first_date
+        FROM rental
+        WHERE customer_id <= 10
+        GROUP BY customer_id
+    ) m ON m.customer_id = r.customer_id
+       AND m.first_date  = r.rental_date
+    ORDER BY r.customer_id, f.title;
+  note: |
+    "그룹별 최솟값" 을 파생 테이블로 구하고 `(그룹키, 값)` 쌍으로 원래 테이블과 조인합니다.
+    `WHERE (customer_id, rental_date) IN (SELECT customer_id, MIN(rental_date) ... GROUP BY ...)` 로도 쓸 수 있지만,
+    MySQL 8.0 에서는 이 형태가 **10초 넘게** 걸립니다(행 생성자 IN 최적화 한계). 같은 의미라도 조인 형태가 훨씬 빠릅니다.
+    같은 시각에 두 건을 빌렸다면 두 행이 나올 수 있습니다 — 정확히 1행이 필요하면 `ROW_NUMBER()` 를 사용하세요.
+
+- id: SUB-021
+  title: HAVING 절 서브쿼리
+  level: 3
+  tags: [HAVING, 스칼라 서브쿼리]
+  question: |
+    출연 편수가 **배우 평균 출연 편수보다 많은** 배우의 수를 구하세요.
+
+    - 출력: `actors`, `avg_films`(배우 평균 출연 편수, 소수 2자리)
+
+    **사용 테이블:** `film_actor`
+  solution: |
+    SELECT COUNT(*) AS actors,
+           (SELECT ROUND(COUNT(*) / COUNT(DISTINCT actor_id), 2) FROM film_actor) AS avg_films
+    FROM (
+        SELECT actor_id
+        FROM film_actor
+        GROUP BY actor_id
+        HAVING COUNT(*) > (SELECT COUNT(*) / COUNT(DISTINCT actor_id) FROM film_actor)
+    ) t;
+  note: |
+    HAVING 에도 서브쿼리를 쓸 수 있습니다. 그룹 집계값을 전체 기준값과 비교할 때 사용합니다.
+    "배우 평균 출연 편수" 는 `전체 출연 기록 수 / 배우 수` 로 바로 구할 수 있습니다 (평균의 정의).
+
+- id: SUB-022
+  title: 결제 합계 상위 1% 고객
+  level: 3
+  tags: [스칼라 서브쿼리, 백분위, LIMIT]
+  question: |
+    고객 수(599명)의 **상위 약 1%(6명)** 에 해당하는 결제 합계 기준값(6번째로 큰 합계)을 구하고,
+    그 이상을 결제한 고객의 `customer_id`, `total` 을 조회하세요. `total` 내림차순, `customer_id` 순.
+
+    **사용 테이블:** `payment`
+  solution: |
+    SELECT customer_id, SUM(amount) AS total
+    FROM payment
+    GROUP BY customer_id
+    HAVING SUM(amount) >= (
+        SELECT total FROM (
+            SELECT SUM(amount) AS total
+            FROM payment
+            GROUP BY customer_id
+            ORDER BY total DESC
+            LIMIT 1 OFFSET 5
+        ) x
+    )
+    ORDER BY total DESC, customer_id;
+  note: |
+    기준값을 먼저 구하고 "기준값 이상" 으로 거르면 **동점자를 모두 포함**할 수 있습니다. 그냥 `LIMIT 6` 은 동점자를 자릅니다.
+    MySQL 은 같은 테이블을 참조하는 서브쿼리에 LIMIT 를 쓸 때 제약이 있어 한 번 더 감쌌습니다.
+
+- id: SUB-023
+  title: 대여 횟수 중앙값
+  level: 4
+  tags: [중앙값, 상관 서브쿼리, 파생 테이블]
+  question: |
+    고객별 대여 횟수의 **중앙값(median)** 을 구하세요. 윈도우 함수 없이 서브쿼리만 사용하세요.
+
+    - 출력: `median_rentals`
+
+    **사용 테이블:** `rental`
+  solution: |
+    SELECT AVG(t.rentals) AS median_rentals
+    FROM (
+        SELECT customer_id, COUNT(*) AS rentals
+        FROM rental
+        GROUP BY customer_id
+    ) t
+    WHERE (SELECT COUNT(*) FROM (SELECT customer_id, COUNT(*) AS rentals FROM rental GROUP BY customer_id) a
+            WHERE a.rentals < t.rentals) * 2 < (SELECT COUNT(DISTINCT customer_id) FROM rental)
+      AND (SELECT COUNT(*) FROM (SELECT customer_id, COUNT(*) AS rentals FROM rental GROUP BY customer_id) b
+            WHERE b.rentals > t.rentals) * 2 < (SELECT COUNT(DISTINCT customer_id) FROM rental);
+  note: |
+    중앙값 = "자기보다 작은 값이 절반 미만이고, 큰 값도 절반 미만인 값". 그런 값들의 평균을 내면 홀수·짝수 개수 모두 처리됩니다.
+    MySQL 에는 `MEDIAN()` 함수가 없어 이런 트릭이 필요합니다. 윈도우 함수(`ROW_NUMBER` + `COUNT() OVER`)로 훨씬 간단히 풀 수 있습니다 (WIN 유형 참고).
+
+- id: SUB-024
+  title: 같은 영화를 여러 번 빌린 고객
+  level: 2
+  tags: [파생 테이블, HAVING]
+  question: |
+    같은 영화를 **2번 이상** 빌린 적이 있는 고객의 수를 구하세요.
+
+    - 출력: `customers`
+
+    **사용 테이블:** `rental`, `inventory`
+  solution: |
+    SELECT COUNT(DISTINCT customer_id) AS customers
+    FROM (
+        SELECT r.customer_id, i.film_id
+        FROM rental r
+        JOIN inventory i ON i.inventory_id = r.inventory_id
+        GROUP BY r.customer_id, i.film_id
+        HAVING COUNT(*) >= 2
+    ) t;
+  note: |
+    (고객, 영화) 쌍으로 그룹을 만든 뒤 HAVING 으로 거르고, 바깥에서 고객 수를 셉니다. **"어떤 조합이 반복되는가"** 를 찾는 패턴입니다.
+
+- id: SUB-025
+  title: 다른 매장 고객에게도 인기 있는 영화
+  level: 4
+  tags: [IN, 교집합]
+  question: |
+    1번 매장 고객의 대여 TOP 50 영화 **이면서** 2번 매장 고객의 대여 TOP 50 영화인 영화를 구하세요.
+    (각 TOP 50 은 대여 횟수 내림차순, `film_id` 순으로 정확히 50편)
+
+    - 출력: `film_id`, `title` — `film_id` 순
+
+    **사용 테이블:** `rental`, `customer`, `inventory`, `film`
+  solution: |
+    SELECT f.film_id, f.title
+    FROM film f
+    WHERE f.film_id IN (
+        SELECT film_id FROM (
+            SELECT i.film_id
+            FROM rental r
+            JOIN customer c  ON c.customer_id  = r.customer_id
+            JOIN inventory i ON i.inventory_id = r.inventory_id
+            WHERE c.store_id = 1
+            GROUP BY i.film_id
+            ORDER BY COUNT(*) DESC, i.film_id
+            LIMIT 50
+        ) s1
+    )
+      AND f.film_id IN (
+        SELECT film_id FROM (
+            SELECT i.film_id
+            FROM rental r
+            JOIN customer c  ON c.customer_id  = r.customer_id
+            JOIN inventory i ON i.inventory_id = r.inventory_id
+            WHERE c.store_id = 2
+            GROUP BY i.film_id
+            ORDER BY COUNT(*) DESC, i.film_id
+            LIMIT 50
+        ) s2
+    )
+    ORDER BY f.film_id;
+  note: |
+    MySQL 은 `IN (SELECT ... LIMIT n)` 을 직접 지원하지 않습니다(`This version of MySQL doesn't yet support 'LIMIT & IN'`).
+    파생 테이블로 **한 번 더 감싸면** 우회할 수 있습니다. MySQL 8.0.31+ 라면 `INTERSECT` 로도 풀 수 있습니다.
+    결과는 단 **2편** — 두 매장 고객의 인기작 목록은 거의 겹치지 않습니다. (TOP 30 으로 줄이면 1편)
+
+- id: SUB-026
+  title: 대여와 연결되지 않은 결제
+  level: 2
+  tags: [NOT EXISTS, 데이터 품질]
+  question: |
+    `payment` 중 **존재하는 대여와 연결되지 않은** 결제의 `payment_id`, `customer_id`, `amount`, `payment_date`, `rental_id` 를 조회하세요.
+    `payment_id` 순.
+
+    **사용 테이블:** `payment`, `rental`
+  solution: |
+    SELECT p.payment_id, p.customer_id, p.amount, p.payment_date, p.rental_id
+    FROM payment p
+    WHERE NOT EXISTS (SELECT 1 FROM rental r WHERE r.rental_id = p.rental_id)
+    ORDER BY p.payment_id;
+  note: |
+    데이터 품질 점검의 기본: **"있어야 할 것이 없는 행"** 을 찾습니다. 결과는 `rental_id` 가 NULL 인 결제 5건입니다.
+    반대 방향(결제가 없는 대여)은 0건이므로, 모든 대여에는 결제가 있습니다. 양방향을 모두 확인하는 습관을 들이세요.
+
+- id: SUB-027
+  title: 가장 많은 영화에 출연한 배우의 출연작
+  level: 3
+  tags: [중첩 서브쿼리, IN]
+  question: |
+    출연 편수가 **가장 많은 배우**(동점이면 모두)의 출연작 수를 장르별로 구하세요.
+
+    - 출력: `actor`, `category`, `films` — `actor`, `films` 내림차순, `category` 순
+
+    **사용 테이블:** `actor`, `film_actor`, `film_category`, `category`
+  solution: |
+    SELECT CONCAT(a.first_name, ' ', a.last_name) AS actor,
+           c.name AS category,
+           COUNT(*) AS films
+    FROM actor a
+    JOIN film_actor fa    ON fa.actor_id    = a.actor_id
+    JOIN film_category fc ON fc.film_id     = fa.film_id
+    JOIN category c       ON c.category_id  = fc.category_id
+    WHERE a.actor_id IN (
+        SELECT actor_id
+        FROM film_actor
+        GROUP BY actor_id
+        HAVING COUNT(*) = (
+            SELECT MAX(cnt) FROM (SELECT COUNT(*) AS cnt FROM film_actor GROUP BY actor_id) m
+        )
+    )
+    GROUP BY a.actor_id, a.first_name, a.last_name, c.category_id, c.name
+    ORDER BY actor, films DESC, category;
+  note: |
+    3단 중첩: ① 배우별 출연 수의 최댓값 → ② 그 값과 같은 배우 → ③ 그 배우의 장르별 집계.
+    `MAX(COUNT(*))` 처럼 집계 함수를 중첩할 수는 없으므로 파생 테이블로 한 번 감쌉니다.
+
+- id: SUB-028
+  title: LATERAL 파생 테이블
+  level: 4
+  tags: [LATERAL, 그룹별 TOP N]
+  question: |
+    장르마다 **대여 횟수 TOP 3 영화**를 구하세요. MySQL 8.0.14+ 의 `LATERAL` 을 사용해 보세요.
+
+    - 출력: `category`, `title`, `rentals` — `category`, `rentals` 내림차순, `title` 순
+
+    **사용 테이블:** `category`, `film_category`, `film`, `inventory`, `rental`
+  solution: |
+    SELECT c.name AS category, t.title, t.rentals
+    FROM category c
+    JOIN LATERAL (
+        SELECT f.title, COUNT(*) AS rentals
+        FROM film_category fc
+        JOIN film f      ON f.film_id      = fc.film_id
+        JOIN inventory i ON i.film_id      = f.film_id
+        JOIN rental r    ON r.inventory_id = i.inventory_id
+        WHERE fc.category_id = c.category_id
+        GROUP BY f.film_id, f.title
+        ORDER BY rentals DESC, f.title
+        LIMIT 3
+    ) t ON TRUE
+    ORDER BY category, t.rentals DESC, t.title;
+  note: |
+    일반 파생 테이블은 바깥 테이블을 참조할 수 없지만, `LATERAL` 을 붙이면 **바깥 행(c)을 참조하는 상관 파생 테이블**이 됩니다.
+    "그룹마다 LIMIT N" 을 자연스럽게 표현할 수 있습니다. 윈도우 함수 `ROW_NUMBER()` 풀이와 비교해 보세요.
+
+- id: SUB-029
+  title: 자기보다 비싼 영화의 수
+  level: 3
+  tags: [상관 서브쿼리, 순위 직접 계산]
+  question: |
+    윈도우 함수 없이, `film_id` 1~10번 영화마다 **자기보다 대여료가 높은 영화의 수**를 구하고 그 값 + 1 을 순위 `rate_rank` 로 표시하세요.
+
+    - 출력: `film_id`, `title`, `rental_rate`, `rate_rank` — `film_id` 순
+
+    **사용 테이블:** `film`
+  solution: |
+    SELECT f.film_id, f.title, f.rental_rate,
+           (SELECT COUNT(*) FROM film f2 WHERE f2.rental_rate > f.rental_rate) + 1 AS rate_rank
+    FROM film f
+    WHERE f.film_id <= 10
+    ORDER BY f.film_id;
+  note: |
+    "나보다 큰 값의 개수 + 1" 은 `RANK()` 와 같은 결과입니다. 윈도우 함수가 없던 시절의 순위 계산법이며, 원리를 이해하는 데 좋습니다.
+    전체 행에 대해 계산하면 O(n²) 이라 느리므로 실무에서는 윈도우 함수를 사용하세요.
+
+- id: SUB-030
+  title: 직전 대여와의 간격
+  level: 4
+  tags: [상관 서브쿼리, 이전 행 찾기]
+  question: |
+    고객 1번의 대여마다 **직전 대여일**과의 간격(일)을 구하세요. 윈도우 함수 없이 상관 서브쿼리를 사용하세요.
+
+    - 출력: `rental_id`, `rental_date`, `prev_rental_date`, `gap_days` — `rental_date`, `rental_id` 순
+    - 첫 대여의 이전 값은 NULL
+
+    **사용 테이블:** `rental`
+  solution: |
+    SELECT r.rental_id, r.rental_date,
+           (SELECT MAX(r2.rental_date) FROM rental r2
+             WHERE r2.customer_id = r.customer_id AND r2.rental_date < r.rental_date) AS prev_rental_date,
+           DATEDIFF(r.rental_date,
+                    (SELECT MAX(r2.rental_date) FROM rental r2
+                      WHERE r2.customer_id = r.customer_id AND r2.rental_date < r.rental_date)) AS gap_days
+    FROM rental r
+    WHERE r.customer_id = 1
+    ORDER BY r.rental_date, r.rental_id;
+  note: |
+    "나보다 이전 것 중 가장 늦은 것" = 직전 값. 윈도우 함수 `LAG(rental_date) OVER (PARTITION BY customer_id ORDER BY rental_date)` 와 같습니다.
+    같은 서브쿼리를 두 번 써야 하는 불편함이 있어 파생 테이블로 한 번 감싸거나 LAG 를 쓰는 편이 좋습니다.
+
+- id: SUB-031
+  title: 국가별 최고 결제 고객
+  level: 4
+  tags: [상관 서브쿼리, 파생 테이블, greatest-n-per-group]
+  question: |
+    국가별로 결제 합계가 가장 큰 고객(동점이면 모두)을 구하세요. 고객이 5명 이상인 국가만 대상입니다.
+
+    - 출력: `country`, `customer`(이름 성), `total` — `country`, `customer` 순
+
+    **사용 테이블:** `payment`, `customer`, `address`, `city`, `country`
+  solution: |
+    SELECT t.country, t.customer, t.total
+    FROM (
+        SELECT co.country_id, co.country,
+               CONCAT(c.first_name, ' ', c.last_name) AS customer,
+               SUM(p.amount) AS total
+        FROM payment p
+        JOIN customer c ON c.customer_id = p.customer_id
+        JOIN address a  ON a.address_id  = c.address_id
+        JOIN city ci    ON ci.city_id    = a.city_id
+        JOIN country co ON co.country_id = ci.country_id
+        GROUP BY co.country_id, co.country, c.customer_id, c.first_name, c.last_name
+    ) t
+    WHERE t.country_id IN (
+        SELECT ci.country_id
+        FROM customer c
+        JOIN address a ON a.address_id = c.address_id
+        JOIN city ci   ON ci.city_id   = a.city_id
+        GROUP BY ci.country_id
+        HAVING COUNT(*) >= 5
+    )
+      AND t.total = (
+        SELECT MAX(s.total) FROM (
+            SELECT ci.country_id, SUM(p.amount) AS total
+            FROM payment p
+            JOIN customer c ON c.customer_id = p.customer_id
+            JOIN address a  ON a.address_id  = c.address_id
+            JOIN city ci    ON ci.city_id    = a.city_id
+            GROUP BY ci.country_id, c.customer_id
+        ) s
+        WHERE s.country_id = t.country_id
+    )
+    ORDER BY t.country, t.customer;
+  note: |
+    파생 테이블 + 상관 서브쿼리 + IN 을 조합한 복합 문제입니다. 같은 집계가 반복되어 쿼리가 길어지는데,
+    CTE 와 `RANK() OVER (PARTITION BY country ...)` 를 쓰면 절반 길이로 줄어듭니다. 두 풀이를 비교해 보는 것이 이 문제의 목적입니다.
+
+- id: SUB-032
+  title: 전월 대비 매출이 늘어난 매장
+  level: 4
+  tags: [파생 테이블 셀프 조인, 전월 비교]
+  question: |
+    매장(`staff.store_id`)별 월 매출을 파생 테이블로 구한 뒤 **같은 파생 테이블과 셀프 조인**해 바로 전 달과 비교하세요.
+    2005-06 ~ 2005-08 만 대상입니다.
+
+    - 출력: `store_id`, `month`, `revenue`, `prev_revenue`, `growth_pct`(소수 1자리) — `store_id`, `month` 순
+
+    **사용 테이블:** `payment`, `staff`
+  solution: |
+    SELECT cur.store_id, cur.month, cur.revenue, prev.revenue AS prev_revenue,
+           ROUND(100 * (cur.revenue - prev.revenue) / prev.revenue, 1) AS growth_pct
+    FROM (
+        SELECT s.store_id, DATE_FORMAT(p.payment_date, '%Y-%m-01') AS month, SUM(p.amount) AS revenue
+        FROM payment p JOIN staff s ON s.staff_id = p.staff_id
+        GROUP BY s.store_id, month
+    ) cur
+    JOIN (
+        SELECT s.store_id, DATE_FORMAT(p.payment_date, '%Y-%m-01') AS month, SUM(p.amount) AS revenue
+        FROM payment p JOIN staff s ON s.staff_id = p.staff_id
+        GROUP BY s.store_id, month
+    ) prev ON prev.store_id = cur.store_id
+          AND prev.month    = DATE_FORMAT(cur.month - INTERVAL 1 MONTH, '%Y-%m-01')
+    WHERE cur.month BETWEEN '2005-06-01' AND '2005-08-01'
+    ORDER BY cur.store_id, cur.month;
+  note: |
+    "전월" 을 행 순서가 아니라 **날짜 연산(`- INTERVAL 1 MONTH`)** 으로 찾기 때문에 중간에 빈 달이 있어도 잘못 비교하지 않습니다.
+    `LAG()` 는 "직전 행" 을 가져오므로 빈 달이 있으면 2달 전과 비교하는 실수를 할 수 있습니다 — 두 방식의 차이를 기억하세요.
+
+- id: SUB-033
+  title: 대여 이력이 유사한 고객
+  level: 5
+  tags: [자카드 유사도, 파생 테이블, 셀프 조인]
+  question: |
+    고객 1번과 **빌린 영화가 가장 많이 겹치는** 고객 5명을 찾고, 자카드 유사도(교집합 / 합집합)를 구하세요.
+
+    - 출력: `customer_id`, `common_films`, `jaccard`(소수 3자리)
+    - `common_films` 내림차순, `customer_id` 순
+
+    **사용 테이블:** `rental`, `inventory`
+  solution: |
+    SELECT o.customer_id,
+           COUNT(*) AS common_films,
+           ROUND(COUNT(*) / (
+               (SELECT COUNT(DISTINCT i.film_id) FROM rental r JOIN inventory i ON i.inventory_id = r.inventory_id
+                 WHERE r.customer_id = 1)
+             + (SELECT COUNT(DISTINCT i.film_id) FROM rental r JOIN inventory i ON i.inventory_id = r.inventory_id
+                 WHERE r.customer_id = o.customer_id)
+             - COUNT(*)
+           ), 3) AS jaccard
+    FROM (
+        SELECT DISTINCT i.film_id
+        FROM rental r JOIN inventory i ON i.inventory_id = r.inventory_id
+        WHERE r.customer_id = 1
+    ) me
+    JOIN (
+        SELECT DISTINCT r.customer_id, i.film_id
+        FROM rental r JOIN inventory i ON i.inventory_id = r.inventory_id
+        WHERE r.customer_id <> 1
+    ) o ON o.film_id = me.film_id
+    GROUP BY o.customer_id
+    ORDER BY common_films DESC, o.customer_id
+    LIMIT 5;
+  note: |
+    협업 필터링 추천의 첫 단계인 **사용자 유사도**를 SQL 로 계산했습니다.
+    |A∩B| 는 조인 후 COUNT, |A∪B| = |A| + |B| − |A∩B| 입니다. 집합 크기는 상관 스칼라 서브쿼리로 구했습니다.
+
+- id: SUB-034
+  title: 한 매장에만 있는 영화의 성과
+  level: 4
+  tags: [NOT EXISTS, 파생 테이블, 갭 분석]
+  question: |
+    **한 매장에만 재고가 있는** 영화 중 대여 횟수가 가장 많은 10편을 구하세요.
+
+    - 출력: `store_id`(재고가 있는 매장), `title`, `copies`, `rentals`
+    - `rentals` 내림차순, `title` 순
+
+    **사용 테이블:** `inventory`, `rental`, `film`
+  solution: |
+    SELECT i.store_id, f.title,
+           COUNT(DISTINCT i.inventory_id) AS copies,
+           COUNT(r.rental_id) AS rentals
+    FROM inventory i
+    JOIN film f ON f.film_id = i.film_id
+    LEFT JOIN rental r ON r.inventory_id = i.inventory_id
+    WHERE NOT EXISTS (
+        SELECT 1 FROM inventory i2
+        WHERE i2.film_id = i.film_id AND i2.store_id <> i.store_id
+    )
+    GROUP BY i.store_id, f.film_id, f.title
+    ORDER BY rentals DESC, f.title
+    LIMIT 10;
+  note: |
+    "다른 매장에는 재고가 **없는**" 조건을 NOT EXISTS 로 표현했습니다. 이런 영화는 1번 매장 196편, 2번 매장 199편입니다.
+    흥미롭게도 전체 대여 TOP 200 영화는 **모두 두 매장에 재고가 있습니다.** 재고가 양쪽에 있어야 대여 기회도 많아지므로,
+    "인기가 많아서 재고가 많은지, 재고가 많아서 많이 빌려지는지" 인과 방향을 조심해서 해석해야 합니다.
+
+- id: SUB-035
+  title: 연속으로 같은 장르를 빌린 횟수
+  level: 5
+  tags: [상관 서브쿼리, 직전 행 비교]
+  question: |
+    고객 1~5번 각각에 대해, 대여를 시간순으로 나열했을 때 **바로 직전 대여와 같은 장르**를 빌린 횟수를 구하세요.
+    윈도우 함수 없이 상관 서브쿼리로 직전 대여를 찾으세요 (같은 시각이면 `rental_id` 가 작은 것이 먼저).
+
+    - 출력: `customer_id`, `rentals`, `same_genre_streaks` — `customer_id` 순
+
+    **사용 테이블:** `rental`, `inventory`, `film_category`
+  solution: |
+    SELECT x.customer_id, COUNT(*) AS rentals,
+           SUM(x.category_id = (
+               SELECT fc2.category_id
+               FROM rental r2
+               JOIN inventory i2      ON i2.inventory_id = r2.inventory_id
+               JOIN film_category fc2 ON fc2.film_id     = i2.film_id
+               WHERE r2.customer_id = x.customer_id
+                 AND (r2.rental_date < x.rental_date
+                      OR (r2.rental_date = x.rental_date AND r2.rental_id < x.rental_id))
+               ORDER BY r2.rental_date DESC, r2.rental_id DESC
+               LIMIT 1
+           )) AS same_genre_streaks
+    FROM (
+        SELECT r.rental_id, r.customer_id, r.rental_date, fc.category_id
+        FROM rental r
+        JOIN inventory i      ON i.inventory_id = r.inventory_id
+        JOIN film_category fc ON fc.film_id     = i.film_id
+        WHERE r.customer_id <= 5
+    ) x
+    GROUP BY x.customer_id
+    ORDER BY x.customer_id;
+  note: |
+    "직전 행" 을 정확히 정의하려면 **동점 처리**(같은 시각)까지 정렬 조건에 넣어야 합니다: `(날짜, id)` 의 사전식 비교.
+    첫 대여는 직전 행이 없어 비교 결과가 NULL 이 되고, `SUM` 은 NULL 을 무시하므로 자연스럽게 제외됩니다.
+    `LAG(category_id) OVER (PARTITION BY customer_id ORDER BY rental_date, rental_id)` 로 다시 풀어 결과를 비교해 보세요.

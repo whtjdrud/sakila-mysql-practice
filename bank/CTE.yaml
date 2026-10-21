@@ -1,0 +1,602 @@
+# CTE: WITH · 다단계 CTE · 재귀 CTE
+- id: CTE-001
+  title: 첫 CTE
+  level: 2
+  tags: [WITH, CTE 기초]
+  question: |
+    CTE 로 고객별 결제 합계 `customer_totals` 를 정의한 뒤, 합계가 평균 이상인 고객 수와 전체 고객 수를 구하세요.
+
+    - 출력: `above_avg`, `total_customers`
+
+    **사용 테이블:** `payment`
+  solution: |
+    WITH customer_totals AS (
+        SELECT customer_id, SUM(amount) AS total
+        FROM payment
+        GROUP BY customer_id
+    )
+    SELECT SUM(total >= (SELECT AVG(total) FROM customer_totals)) AS above_avg,
+           COUNT(*) AS total_customers
+    FROM customer_totals;
+  note: |
+    `WITH 이름 AS (쿼리)` 로 정의한 CTE 는 이어지는 쿼리에서 **테이블처럼 여러 번** 참조할 수 있습니다.
+    파생 테이블은 한 번 정의하면 그 자리에서만 쓸 수 있어 같은 서브쿼리를 반복해야 했지만, CTE 는 이름으로 재사용합니다.
+
+- id: CTE-002
+  title: 다단계 CTE 파이프라인
+  level: 2
+  tags: [다중 CTE, 단계별 분해]
+  question: |
+    아래 단계를 CTE 3개로 나눠 작성하세요.
+
+    1. `film_rentals`: 영화별 대여 횟수
+    2. `category_stats`: 장르별 평균 대여 횟수
+    3. 최종: 장르별 평균 대여 횟수가 전체 장르 평균보다 높은 장르
+
+    - 출력: `category`, `avg_rentals`(소수 2자리) — `avg_rentals` 내림차순, `category` 순
+
+    **사용 테이블:** `rental`, `inventory`, `film_category`, `category`
+  solution: |
+    WITH film_rentals AS (
+        SELECT i.film_id, COUNT(*) AS rentals
+        FROM rental r
+        JOIN inventory i ON i.inventory_id = r.inventory_id
+        GROUP BY i.film_id
+    ), category_stats AS (
+        SELECT c.name AS category, AVG(fr.rentals) AS avg_rentals
+        FROM film_rentals fr
+        JOIN film_category fc ON fc.film_id     = fr.film_id
+        JOIN category c       ON c.category_id  = fc.category_id
+        GROUP BY c.category_id, c.name
+    )
+    SELECT category, ROUND(avg_rentals, 2) AS avg_rentals
+    FROM category_stats
+    WHERE avg_rentals > (SELECT AVG(avg_rentals) FROM category_stats)
+    ORDER BY avg_rentals DESC, category;
+  note: |
+    CTE 는 쉼표로 이어 여러 개를 정의할 수 있고, **뒤의 CTE 가 앞의 CTE 를 참조**할 수 있습니다.
+    복잡한 쿼리를 "데이터 파이프라인" 처럼 단계별로 읽을 수 있게 만드는 것이 CTE 의 가장 큰 장점입니다.
+
+- id: CTE-003
+  title: CTE 로 다시 쓰는 서브쿼리 문제
+  level: 3
+  tags: [CTE, 리팩터링, 등급 평균]
+  question: |
+    영화별 대여 횟수를 CTE 로 **한 번만** 정의해, 대여 횟수가 자기 등급 평균보다 많은 영화 수를 등급별로 구하세요.
+    (SUB-018 과 같은 문제를 CTE 로 다시 쓰는 연습입니다.)
+
+    - 출력: `rating`, `films`, `above_avg` — `rating` 순
+
+    **사용 테이블:** `film`, `inventory`, `rental`
+  solution: |
+    WITH film_rentals AS (
+        SELECT f.film_id, f.rating, COUNT(*) AS rentals
+        FROM film f
+        JOIN inventory i ON i.film_id      = f.film_id
+        JOIN rental r    ON r.inventory_id = i.inventory_id
+        GROUP BY f.film_id, f.rating
+    ), rating_avg AS (
+        SELECT rating, AVG(rentals) AS avg_rentals
+        FROM film_rentals
+        GROUP BY rating
+    )
+    SELECT fr.rating, COUNT(*) AS films, SUM(fr.rentals > ra.avg_rentals) AS above_avg
+    FROM film_rentals fr
+    JOIN rating_avg ra ON ra.rating = fr.rating
+    GROUP BY fr.rating
+    ORDER BY fr.rating;
+  note: |
+    SUB-018 의 풀이와 비교하면 같은 집계가 두 번 반복되지 않아 훨씬 읽기 쉽습니다. 결과는 같아야 합니다.
+
+- id: CTE-004
+  title: 1부터 10까지 (재귀 CTE 기초)
+  level: 2
+  tags: [WITH RECURSIVE, 숫자 생성]
+  question: |
+    재귀 CTE 로 1부터 10까지의 숫자 `n` 과 그 제곱 `square` 를 생성하세요. `n` 순.
+  solution: |
+    WITH RECURSIVE nums AS (
+        SELECT 1 AS n
+        UNION ALL
+        SELECT n + 1 FROM nums WHERE n < 10
+    )
+    SELECT n, n * n AS square
+    FROM nums
+    ORDER BY n;
+  note: |
+    재귀 CTE = **시작(anchor) 쿼리** `UNION ALL` **재귀 쿼리**(자기 자신을 참조). 재귀 쿼리가 빈 결과를 낼 때 멈춥니다.
+    종료 조건(`WHERE n < 10`)을 빼먹으면 `cte_max_recursion_depth`(기본 1000)에 걸려 오류가 납니다.
+
+- id: CTE-005
+  title: 빈 날짜 채우기
+  level: 3
+  tags: [WITH RECURSIVE, 날짜 생성, LEFT JOIN]
+  question: |
+    2005-05-24 ~ 2005-06-20 의 **모든 날짜**에 대해 대여 건수를 구하세요. 대여가 없는 날도 0으로 표시해야 합니다.
+
+    - 출력: `day`, `rentals` — `day` 순
+
+    **사용 테이블:** `rental`
+  solution: |
+    WITH RECURSIVE days AS (
+        SELECT DATE('2005-05-24') AS day
+        UNION ALL
+        SELECT day + INTERVAL 1 DAY FROM days WHERE day < '2005-06-20'
+    )
+    SELECT d.day, COUNT(r.rental_id) AS rentals
+    FROM days d
+    LEFT JOIN rental r ON r.rental_date >= d.day
+                      AND r.rental_date <  d.day + INTERVAL 1 DAY
+    GROUP BY d.day
+    ORDER BY d.day;
+  note: |
+    `GROUP BY DATE(rental_date)` 는 대여가 **있는 날만** 결과에 나옵니다. 시계열 차트를 그리면 빈 날이 건너뛰어져 왜곡됩니다.
+    재귀 CTE 로 **달력(날짜 차원)** 을 만들고 LEFT JOIN 하는 것이 정석입니다. 5/31 이후 6월 중순까지 0 인 날이 많이 보일 것입니다.
+
+- id: CTE-006
+  title: 월 목록 생성과 매출 채우기
+  level: 3
+  tags: [WITH RECURSIVE, 월 생성]
+  question: |
+    2005-05 부터 2006-02 까지 **모든 달**의 매출을 구하세요. 매출이 없는 달은 0.00 입니다.
+
+    - 출력: `month`(YYYY-MM), `revenue` — `month` 순
+
+    **사용 테이블:** `payment`
+  solution: |
+    WITH RECURSIVE months AS (
+        SELECT DATE('2005-05-01') AS m
+        UNION ALL
+        SELECT m + INTERVAL 1 MONTH FROM months WHERE m < '2006-02-01'
+    )
+    SELECT DATE_FORMAT(mo.m, '%Y-%m') AS month,
+           COALESCE(SUM(p.amount), 0.00) AS revenue
+    FROM months mo
+    LEFT JOIN payment p ON p.payment_date >= mo.m
+                       AND p.payment_date <  mo.m + INTERVAL 1 MONTH
+    GROUP BY mo.m
+    ORDER BY mo.m;
+  note: |
+    LEFT JOIN 결과 매칭이 없으면 `SUM` 은 0이 아니라 **NULL** 을 돌려주므로 `COALESCE(..., 0)` 가 필요합니다.
+    AGG-008 결과와 비교하면 2005-09 ~ 2006-01 의 빈 구간이 명확하게 드러납니다.
+
+- id: CTE-007
+  title: 쉼표 문자열을 행으로 분리
+  level: 4
+  tags: [WITH RECURSIVE, 문자열 분리, SUBSTRING_INDEX]
+  question: |
+    `special_features`(쉼표로 구분된 값)를 **한 행에 하나씩** 분리해, 부록 종류별 영화 수를 구하세요.
+
+    - 출력: `feature`, `films` — `films` 내림차순, `feature` 순
+
+    **사용 테이블:** `film`
+  solution: |
+    WITH RECURSIVE split AS (
+        SELECT film_id,
+               SUBSTRING_INDEX(special_features, ',', 1) AS feature,
+               IF(LOCATE(',', special_features) > 0,
+                  SUBSTRING(special_features, LOCATE(',', special_features) + 1), NULL) AS rest
+        FROM film
+        WHERE special_features IS NOT NULL AND special_features <> ''
+        UNION ALL
+        SELECT film_id,
+               SUBSTRING_INDEX(rest, ',', 1),
+               IF(LOCATE(',', rest) > 0, SUBSTRING(rest, LOCATE(',', rest) + 1), NULL)
+        FROM split
+        WHERE rest IS NOT NULL
+    )
+    SELECT feature, COUNT(*) AS films
+    FROM split
+    GROUP BY feature
+    ORDER BY films DESC, feature;
+  note: |
+    "첫 토큰을 떼고 나머지(`rest`)를 다음 재귀로 넘기는" 방식으로 문자열을 분리합니다. 나머지가 없으면(NULL) 재귀가 멈춥니다.
+    재귀 CTE 의 컬럼 타입은 **앵커 쿼리**에서 정해지므로, 재귀 단계에서 더 긴 값이 나오면 잘릴 수 있다는 점에 주의하세요.
+    (MySQL 8.0.4+ 는 `JSON_TABLE` 로도 분리할 수 있습니다.)
+
+- id: CTE-008
+  title: 피보나치 수열
+  level: 2
+  tags: [WITH RECURSIVE, 다중 컬럼 재귀]
+  question: |
+    재귀 CTE 로 피보나치 수열의 처음 15항을 구하세요. (1항 = 1, 2항 = 1)
+
+    - 출력: `n`, `fib` — `n` 순
+  solution: |
+    WITH RECURSIVE fib AS (
+        SELECT 1 AS n, CAST(1 AS UNSIGNED) AS fib, CAST(1 AS UNSIGNED) AS next_fib
+        UNION ALL
+        SELECT n + 1, next_fib, fib + next_fib FROM fib WHERE n < 15
+    )
+    SELECT n, fib FROM fib ORDER BY n;
+  note: |
+    재귀 단계에서 이전 행의 **여러 컬럼**을 이용할 수 있습니다. 상태(현재 값, 다음 값)를 컬럼으로 들고 다니는 것이 요령입니다.
+    앵커에서 `CAST(... AS UNSIGNED)` 로 타입을 넉넉히 잡지 않으면 큰 값에서 오버플로가 날 수 있습니다.
+
+- id: CTE-009
+  title: 누적 매출 목표 달성일
+  level: 4
+  tags: [WITH RECURSIVE, 누적합, 목표 달성]
+  question: |
+    재귀 CTE 로 2005-07-01 부터 날짜별 누적 매출을 계산해, 누적 매출이 **처음으로 10,000 을 넘은 날**과 그날의 누적 매출을 구하세요.
+
+    - 출력: `day`, `cumulative`
+
+    **사용 테이블:** `payment`
+  solution: |
+    WITH RECURSIVE daily AS (
+        SELECT DATE(payment_date) AS day, SUM(amount) AS revenue
+        FROM payment
+        WHERE payment_date >= '2005-07-01' AND payment_date < '2005-08-01'
+        GROUP BY day
+    ), calendar AS (
+        SELECT DATE('2005-07-01') AS day
+        UNION ALL
+        SELECT day + INTERVAL 1 DAY FROM calendar WHERE day < '2005-07-31'
+    ), running AS (
+        SELECT c.day, COALESCE(d.revenue, 0) AS cumulative
+        FROM calendar c LEFT JOIN daily d ON d.day = c.day
+        WHERE c.day = '2005-07-01'
+        UNION ALL
+        SELECT c.day, r.cumulative + COALESCE(d.revenue, 0)
+        FROM running r
+        JOIN calendar c   ON c.day = r.day + INTERVAL 1 DAY
+        LEFT JOIN daily d ON d.day = c.day
+    )
+    SELECT day, cumulative
+    FROM running
+    WHERE cumulative > 10000
+    ORDER BY day
+    LIMIT 1;
+  note: |
+    `WITH RECURSIVE` 아래에는 일반 CTE 와 재귀 CTE 를 섞어 쓸 수 있습니다. 재귀로 하루씩 누적하는 방식은 원리를 보여주기 위한 것이고,
+    실무에서는 `SUM(revenue) OVER (ORDER BY day)` 윈도우 함수가 훨씬 간단하고 빠릅니다.
+    재귀 쿼리에서 집계(`SUM`)나 `GROUP BY` 를 직접 쓸 수 없어서 일별 매출을 별도 CTE 로 먼저 만들었습니다.
+
+- id: CTE-010
+  title: 배우 연결 거리 (케빈 베이컨 게임)
+  level: 5
+  tags: [WITH RECURSIVE, 그래프 탐색, BFS]
+  question: |
+    배우 `PENELOPE GUINESS`(actor_id = 1) 에서 시작해, **함께 출연한 관계**를 따라 각 배우까지의 최소 거리를 구하세요.
+    거리 1 = 같은 영화에 출연, 거리 2 = 출연자의 출연자. **거리 2 까지만** 탐색합니다.
+
+    - 출력: `distance`, `actors`(그 거리의 배우 수) — `distance` 순 (자기 자신 = 거리 0 포함)
+
+    **사용 테이블:** `film_actor`
+  solution: |
+    WITH RECURSIVE costar AS (
+        SELECT DISTINCT a.actor_id AS src, b.actor_id AS dst
+        FROM film_actor a
+        JOIN film_actor b ON b.film_id = a.film_id AND b.actor_id <> a.actor_id
+    ), bfs AS (
+        SELECT 1 AS actor_id, 0 AS distance
+        UNION ALL
+        SELECT c.dst, b.distance + 1
+        FROM bfs b
+        JOIN costar c ON c.src = b.actor_id
+        WHERE b.distance < 2
+    )
+    SELECT distance, COUNT(*) AS actors
+    FROM (
+        SELECT actor_id, MIN(distance) AS distance
+        FROM bfs
+        GROUP BY actor_id
+    ) t
+    GROUP BY distance
+    ORDER BY distance;
+  note: |
+    재귀 CTE 로 **그래프 너비 우선 탐색**을 할 수 있습니다. 다만 MySQL 재귀 CTE 에서는 "이미 방문한 노드"를 제외할 수 없어
+    같은 배우가 여러 경로로 반복 등장하므로, 마지막에 `MIN(distance)` 로 최단 거리만 남겼습니다.
+    깊이 제한이 없으면 행 수가 기하급수적으로 늘어나니 **반드시 깊이 조건**(`distance < 2`)을 두세요.
+
+- id: CTE-011
+  title: 재귀로 만드는 경로 문자열
+  level: 4
+  tags: [WITH RECURSIVE, 경로, 계층]
+  question: |
+    주소 계층(`country → city → address`)을 재귀 없이도 만들 수 있지만, 연습을 위해 **가상의 계층 테이블**을 CTE 로 만들고 재귀로 경로를 펼치세요.
+
+    ```
+    node_id | parent_id | name
+    1       | NULL      | 본사
+    2       | 1         | 영업본부
+    3       | 1         | 운영본부
+    4       | 2         | 1번 매장
+    5       | 2         | 2번 매장
+    6       | 3         | 물류팀
+    7       | 6         | 재고관리파트
+    ```
+
+    - 출력: `node_id`, `depth`(본사=0), `path`(예: `본사 > 운영본부 > 물류팀`) — `path` 순
+
+  solution: |
+    WITH RECURSIVE org AS (
+        SELECT 1 AS node_id, NULL AS parent_id, '본사' AS name
+        UNION ALL SELECT 2, 1, '영업본부'
+        UNION ALL SELECT 3, 1, '운영본부'
+        UNION ALL SELECT 4, 2, '1번 매장'
+        UNION ALL SELECT 5, 2, '2번 매장'
+        UNION ALL SELECT 6, 3, '물류팀'
+        UNION ALL SELECT 7, 6, '재고관리파트'
+    ), tree AS (
+        SELECT node_id, 0 AS depth, CAST(name AS CHAR(200)) AS path
+        FROM org WHERE parent_id IS NULL
+        UNION ALL
+        SELECT o.node_id, t.depth + 1, CONCAT(t.path, ' > ', o.name)
+        FROM tree t
+        JOIN org o ON o.parent_id = t.node_id
+    )
+    SELECT node_id, depth, path
+    FROM tree
+    ORDER BY path;
+  note: |
+    조직도·카테고리 트리·댓글 스레드처럼 **자기 참조(parent_id)** 테이블을 펼치는 것이 재귀 CTE 의 대표 용도입니다.
+    앵커에서 `CAST(name AS CHAR(200))` 로 길이를 넉넉히 잡지 않으면 경로가 앵커 값 길이(`본사` = 2글자)에 맞춰 **잘립니다.**
+
+- id: CTE-012
+  title: 장르별 매출 1위 배우
+  level: 4
+  tags: [CTE, RANK, 6단 조인]
+  question: |
+    각 장르에서, 출연 영화들이 벌어들인 **매출 합계가 가장 큰 배우**를 구하세요.
+
+    - 출력: `category`, `actor`(이름 성), `revenue`
+    - 동점이면 모두 출력 (`RANK()` 사용) — 장르명, 배우 순
+
+    **사용 테이블:** `payment`, `rental`, `inventory`, `film_category`, `category`, `film_actor`, `actor`
+  solution: |
+    WITH actor_revenue AS (
+        SELECT cat.name AS category,
+               a.actor_id,
+               CONCAT(a.first_name, ' ', a.last_name) AS actor,
+               SUM(p.amount) AS revenue
+        FROM payment p
+        JOIN rental r         ON r.rental_id     = p.rental_id
+        JOIN inventory i      ON i.inventory_id  = r.inventory_id
+        JOIN film_category fc ON fc.film_id      = i.film_id
+        JOIN category cat     ON cat.category_id = fc.category_id
+        JOIN film_actor fa    ON fa.film_id      = i.film_id
+        JOIN actor a          ON a.actor_id      = fa.actor_id
+        GROUP BY cat.name, a.actor_id, actor
+    ), ranked AS (
+        SELECT *, RANK() OVER (PARTITION BY category ORDER BY revenue DESC) AS rnk
+        FROM actor_revenue
+    )
+    SELECT category, actor, revenue
+    FROM ranked
+    WHERE rnk = 1
+    ORDER BY category, actor;
+  note: |
+    - 6단 조인 → 집계 → `RANK() OVER (PARTITION BY ...)` → `rnk = 1`. **"그룹별 1등"** 을 구하는 정석 패턴입니다.
+    - ⚠️ `film_actor` 를 조인하면 결제 1건이 배우 수만큼 복제됩니다. "배우별 기여 매출"로는 맞지만, 이 값을 더해 "장르 총매출"이라 하면 몇 배로 부풀려집니다 (JOIN-019 참고).
+    - **Sports 의 BEN WILLIS(900.43)** 가 압도적인데, Sports 영화에만 9편 출연했기 때문입니다. "흥행작"보다 **출연 편수**의 영향이 큽니다.
+    - RIP CRAWFORD 는 Action·Family, GINA DEGENERES 는 Music·Sci-Fi 두 장르에서 1위입니다.
+
+- id: CTE-013
+  title: 우수 고객 순위 (CTE + 윈도우)
+  level: 3
+  tags: [CTE, RANK, PARTITION BY]
+  question: |
+    고객별 총 결제 금액을 구하고, 전체 순위와 **국가 내 순위**를 함께 출력하세요. 전체 순위 상위 10명만 출력합니다.
+
+    - 출력: `customer`(이름 성), `country`, `total_paid`, `overall_rank`, `country_rank`
+    - 순위는 `RANK()` — 전체 순위, 고객 이름 순
+
+    **사용 테이블:** `payment`, `customer`, `address`, `city`, `country`
+  solution: |
+    WITH totals AS (
+        SELECT c.customer_id,
+               CONCAT(c.first_name, ' ', c.last_name) AS customer,
+               co.country,
+               SUM(p.amount) AS total_paid
+        FROM payment p
+        JOIN customer c ON c.customer_id = p.customer_id
+        JOIN address a  ON a.address_id  = c.address_id
+        JOIN city ci    ON ci.city_id    = a.city_id
+        JOIN country co ON co.country_id = ci.country_id
+        GROUP BY c.customer_id, customer, co.country
+    ), ranked AS (
+        SELECT customer, country, total_paid,
+               RANK() OVER (ORDER BY total_paid DESC)                      AS overall_rank,
+               RANK() OVER (PARTITION BY country ORDER BY total_paid DESC) AS country_rank
+        FROM totals
+    )
+    SELECT *
+    FROM ranked
+    WHERE overall_rank <= 10
+    ORDER BY overall_rank, customer;
+  note: |
+    - 윈도우 함수 결과는 같은 SELECT 의 `WHERE` 에서 쓸 수 없어 `ranked` CTE 로 감싼 뒤 거릅니다.
+    - 1위는 **KARL SEAL(미국, 221.55)**. **MARION SNYDER 와 RHONDA KENNEDY 가 공동 4위**이고 다음은 5가 아니라 **6위** — `RANK()` 의 특징입니다.
+    - 상위 10명 중 9명이 국가 내 1위인데 **ANA BRADLEY 만 국가 내 2위**입니다. 같은 미국의 KARL SEAL 때문이죠.
+
+- id: CTE-014
+  title: 고객 생애 지표 요약
+  level: 4
+  tags: [다중 CTE, 고객 360]
+  question: |
+    고객 1~10번에 대해 CTE 를 조합해 한 행짜리 고객 요약을 만드세요.
+
+    - `rentals`: 대여 횟수, `total_paid`: 결제 합계
+    - `fav_category`: 가장 많이 빌린 장르 (동점이면 이름순 첫 번째)
+    - `avg_gap_days`: 대여 간 평균 간격(일, 소수 1자리) = (마지막 − 첫 대여 일수) / (대여 횟수 − 1)
+
+    출력: `customer_id`, `rentals`, `total_paid`, `fav_category`, `avg_gap_days` — `customer_id` 순
+
+    **사용 테이블:** `rental`, `payment`, `inventory`, `film_category`, `category`
+  solution: |
+    WITH r AS (
+        SELECT customer_id, COUNT(*) AS rentals,
+               DATEDIFF(MAX(rental_date), MIN(rental_date)) AS span_days
+        FROM rental
+        WHERE customer_id <= 10
+        GROUP BY customer_id
+    ), p AS (
+        SELECT customer_id, SUM(amount) AS total_paid
+        FROM payment
+        WHERE customer_id <= 10
+        GROUP BY customer_id
+    ), cat AS (
+        SELECT rt.customer_id, c.name, COUNT(*) AS cnt
+        FROM rental rt
+        JOIN inventory i      ON i.inventory_id = rt.inventory_id
+        JOIN film_category fc ON fc.film_id     = i.film_id
+        JOIN category c       ON c.category_id  = fc.category_id
+        WHERE rt.customer_id <= 10
+        GROUP BY rt.customer_id, c.name
+    ), fav AS (
+        SELECT customer_id, name AS fav_category
+        FROM (SELECT customer_id, name,
+                     ROW_NUMBER() OVER (PARTITION BY customer_id ORDER BY cnt DESC, name) AS rn
+              FROM cat) x
+        WHERE rn = 1
+    )
+    SELECT r.customer_id, r.rentals, p.total_paid, fav.fav_category,
+           ROUND(r.span_days / NULLIF(r.rentals - 1, 0), 1) AS avg_gap_days
+    FROM r
+    JOIN p   ON p.customer_id   = r.customer_id
+    JOIN fav ON fav.customer_id = r.customer_id
+    ORDER BY r.customer_id;
+  note: |
+    서로 다른 테이블의 집계를 한 번에 조인하면 팬아웃으로 값이 부풀려집니다. **각각 CTE 로 고객 단위까지 집계한 뒤** 조인하면 안전합니다.
+    이렇게 "1고객 1행" 으로 만든 요약 테이블은 대시보드·머신러닝 피처의 기본 형태입니다.
+
+- id: CTE-015
+  title: 재귀로 구하는 연속 대여일
+  level: 5
+  tags: [WITH RECURSIVE, 연속 구간]
+  question: |
+    고객 1~20번 중 **며칠 연속으로** 대여한 기록이 가장 긴 고객 5명을 구하세요. 재귀 CTE 로 "다음 날에도 대여했는가" 를 따라가세요.
+
+    - 출력: `customer_id`, `streak_start`, `streak_days`
+    - `streak_days` 내림차순, `customer_id`, `streak_start` 순 (고객당 가장 긴 연속 구간 하나, 동률이면 이른 구간)
+
+    **사용 테이블:** `rental`
+  solution: |
+    WITH RECURSIVE active_days AS (
+        SELECT DISTINCT customer_id, DATE(rental_date) AS day
+        FROM rental
+        WHERE customer_id <= 20
+    ), streak AS (
+        SELECT a.customer_id, a.day AS streak_start, a.day AS cur_day, 1 AS streak_days
+        FROM active_days a
+        WHERE NOT EXISTS (SELECT 1 FROM active_days b
+                          WHERE b.customer_id = a.customer_id AND b.day = a.day - INTERVAL 1 DAY)
+        UNION ALL
+        SELECT s.customer_id, s.streak_start, a.day, s.streak_days + 1
+        FROM streak s
+        JOIN active_days a ON a.customer_id = s.customer_id
+                          AND a.day = s.cur_day + INTERVAL 1 DAY
+    ), best AS (
+        SELECT customer_id, streak_start, MAX(streak_days) AS streak_days
+        FROM streak
+        GROUP BY customer_id, streak_start
+    ), ranked AS (
+        SELECT *, ROW_NUMBER() OVER (PARTITION BY customer_id ORDER BY streak_days DESC, streak_start) AS rn
+        FROM best
+    )
+    SELECT customer_id, streak_start, streak_days
+    FROM ranked
+    WHERE rn = 1
+    ORDER BY streak_days DESC, customer_id, streak_start
+    LIMIT 5;
+  note: |
+    앵커는 **연속 구간의 시작일**(전날 대여가 없는 날)이고, 재귀는 "다음 날도 대여했으면 한 칸 늘린다" 입니다.
+    같은 문제를 윈도우 함수의 **갭/섬(gaps and islands)** 기법(`day - ROW_NUMBER()`)으로도 풀 수 있습니다 (ADV 유형 참고).
+
+- id: CTE-016
+  title: 재고 회전율 분석
+  level: 4
+  tags: [다중 CTE, 비율, 재고]
+  question: |
+    장르별 **재고 회전율**(대여 횟수 / 재고 장수)과 **재고 1장당 매출**을 구하세요.
+
+    - 출력: `category`, `copies`, `rentals`, `turnover`(소수 2자리), `revenue_per_copy`(소수 2자리)
+    - `turnover` 내림차순, `category` 순
+
+    **사용 테이블:** `inventory`, `rental`, `payment`, `film_category`, `category`
+  solution: |
+    WITH inv AS (
+        SELECT fc.category_id, COUNT(*) AS copies
+        FROM inventory i
+        JOIN film_category fc ON fc.film_id = i.film_id
+        GROUP BY fc.category_id
+    ), rent AS (
+        SELECT fc.category_id, COUNT(*) AS rentals, SUM(p.amount) AS revenue
+        FROM rental r
+        JOIN inventory i      ON i.inventory_id = r.inventory_id
+        JOIN film_category fc ON fc.film_id     = i.film_id
+        LEFT JOIN payment p   ON p.rental_id    = r.rental_id
+        GROUP BY fc.category_id
+    )
+    SELECT c.name AS category, inv.copies, rent.rentals,
+           ROUND(rent.rentals / inv.copies, 2) AS turnover,
+           ROUND(rent.revenue / inv.copies, 2) AS revenue_per_copy
+    FROM category c
+    JOIN inv  ON inv.category_id  = c.category_id
+    JOIN rent ON rent.category_id = c.category_id
+    ORDER BY turnover DESC, category;
+  note: |
+    분자(대여)와 분모(재고)를 **따로 집계**해야 정확합니다. 한 번에 `inventory LEFT JOIN rental` 하고 `COUNT(DISTINCT inventory_id)` 로도 되지만,
+    결제 합계까지 붙이면 팬아웃 문제가 생깁니다. 대여 1건에 결제가 여러 건일 수 있으므로 `rent` CTE 에서도 그 점을 확인해 보세요.
+
+- id: CTE-017
+  title: CTE 를 여러 번 참조하는 자기 비교
+  level: 3
+  tags: [CTE 재사용, 셀프 조인]
+  question: |
+    CTE 로 배우별 출연 편수를 정의한 뒤, **출연 편수가 정확히 같은 배우 쌍**의 수를 구하세요. (a < b)
+
+    - 출력: `pairs`
+
+    **사용 테이블:** `film_actor`
+  solution: |
+    WITH ac AS (
+        SELECT actor_id, COUNT(*) AS films
+        FROM film_actor
+        GROUP BY actor_id
+    )
+    SELECT COUNT(*) AS pairs
+    FROM ac a
+    JOIN ac b ON b.films = a.films AND b.actor_id > a.actor_id;
+  note: |
+    CTE 는 같은 쿼리 안에서 **여러 별칭으로 반복 참조**할 수 있습니다. 파생 테이블이었다면 같은 서브쿼리를 두 번 써야 합니다.
+    검산: 출연 편수가 k 인 배우가 n_k 명이면 쌍의 수는 Σ n_k(n_k−1)/2 입니다.
+
+- id: CTE-018
+  title: 날짜 × 매장 완전한 일별 리포트
+  level: 4
+  tags: [WITH RECURSIVE, CROSS JOIN, 빈 값 채우기]
+  question: |
+    2005-08-15 ~ 2005-08-25 의 모든 날짜 × 모든 매장 조합에 대해 대여 건수와 매출을 구하세요. 없는 조합은 0.
+
+    - 매장은 재고(`inventory.store_id`) 기준, 매출은 그 대여에 연결된 결제 합계
+    - 출력: `day`, `store_id`, `rentals`, `revenue` — `day`, `store_id` 순
+
+    **사용 테이블:** `rental`, `inventory`, `payment`, `store`
+  solution: |
+    WITH RECURSIVE days AS (
+        SELECT DATE('2005-08-15') AS day
+        UNION ALL
+        SELECT day + INTERVAL 1 DAY FROM days WHERE day < '2005-08-25'
+    ), daily AS (
+        SELECT DATE(r.rental_date) AS day, i.store_id,
+               COUNT(DISTINCT r.rental_id) AS rentals,
+               SUM(p.amount) AS revenue
+        FROM rental r
+        JOIN inventory i    ON i.inventory_id = r.inventory_id
+        LEFT JOIN payment p ON p.rental_id    = r.rental_id
+        WHERE r.rental_date >= '2005-08-15' AND r.rental_date < '2005-08-26'
+        GROUP BY day, i.store_id
+    )
+    SELECT d.day, s.store_id,
+           COALESCE(x.rentals, 0) AS rentals,
+           COALESCE(x.revenue, 0) AS revenue
+    FROM days d
+    CROSS JOIN store s
+    LEFT JOIN daily x ON x.day = d.day AND x.store_id = s.store_id
+    ORDER BY d.day, s.store_id;
+  note: |
+    "날짜 차원 × 매장 차원" 의 뼈대를 만들고 실적을 LEFT JOIN 하는 것은 **BI 리포트의 표준 구조**입니다.
+    8월 하순에는 대여가 없는 날이 섞여 있어, 뼈대 없이 집계하면 그 날짜들이 통째로 사라집니다.

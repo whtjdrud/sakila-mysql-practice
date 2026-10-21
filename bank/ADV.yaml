@@ -1,0 +1,785 @@
+# 복합 분석: 코호트 · 리텐션 · 갭/섬 · 동시성 · 실무형 리포트
+- id: ADV-001
+  title: 연속 대여일 (갭과 섬)
+  level: 4
+  tags: [갭/섬, ROW_NUMBER, 날짜 연산]
+  question: |
+    고객 1~20번의 **연속 대여일 구간**(하루도 빠지지 않고 대여한 기간)을 모두 구하고, 2일 이상인 구간만 출력하세요.
+
+    - 출력: `customer_id`, `streak_start`, `streak_end`, `days` — `days` 내림차순, `customer_id`, `streak_start` 순
+
+    **사용 테이블:** `rental`
+  solution: |
+    WITH d AS (
+        SELECT DISTINCT customer_id, DATE(rental_date) AS day
+        FROM rental
+        WHERE customer_id <= 20
+    ), g AS (
+        SELECT customer_id, day,
+               day - INTERVAL ROW_NUMBER() OVER (PARTITION BY customer_id ORDER BY day) DAY AS grp
+        FROM d
+    )
+    SELECT customer_id, MIN(day) AS streak_start, MAX(day) AS streak_end, COUNT(*) AS days
+    FROM g
+    GROUP BY customer_id, grp
+    HAVING COUNT(*) >= 2
+    ORDER BY days DESC, customer_id, streak_start;
+  note: |
+    **갭과 섬(gaps and islands)** 의 고전 기법: 연속된 날짜에서 `날짜 − 행번호` 는 **같은 값**이 됩니다.
+    (5/25−1 = 5/24, 5/26−2 = 5/24, 5/27−3 = 5/24 …) 이 값으로 GROUP BY 하면 연속 구간이 하나의 그룹이 됩니다.
+    CTE-015 의 재귀 풀이와 비교하면 훨씬 간결하고 빠릅니다.
+
+- id: ADV-002
+  title: 월별 코호트 리텐션
+  level: 5
+  tags: [코호트, 리텐션, 피벗]
+  question: |
+    고객을 **첫 대여 월**(코호트)로 묶고, 이후 각 달에 다시 대여한 고객 비율(리텐션)을 구하세요.
+
+    - `month_0` = 첫 달(항상 100), `month_1` = 다음 달 … `month_3` 까지
+    - 출력: `cohort`(YYYY-MM), `customers`, `month_0`, `month_1`, `month_2`, `month_3` (모두 % 소수 1자리) — `cohort` 순
+
+    **사용 테이블:** `rental`
+  solution: |
+    WITH activity AS (
+        SELECT DISTINCT customer_id, DATE_FORMAT(rental_date, '%Y-%m-01') AS month
+        FROM rental
+    ), cohort AS (
+        SELECT customer_id, MIN(month) AS cohort_month
+        FROM activity
+        GROUP BY customer_id
+    ), aged AS (
+        SELECT c.cohort_month, a.customer_id,
+               TIMESTAMPDIFF(MONTH, c.cohort_month, a.month) AS age
+        FROM activity a
+        JOIN cohort c ON c.customer_id = a.customer_id
+    )
+    SELECT DATE_FORMAT(cohort_month, '%Y-%m') AS cohort,
+           COUNT(DISTINCT customer_id) AS customers,
+           ROUND(100 * COUNT(DISTINCT CASE WHEN age = 0 THEN customer_id END) / COUNT(DISTINCT customer_id), 1) AS month_0,
+           ROUND(100 * COUNT(DISTINCT CASE WHEN age = 1 THEN customer_id END) / COUNT(DISTINCT customer_id), 1) AS month_1,
+           ROUND(100 * COUNT(DISTINCT CASE WHEN age = 2 THEN customer_id END) / COUNT(DISTINCT customer_id), 1) AS month_2,
+           ROUND(100 * COUNT(DISTINCT CASE WHEN age = 3 THEN customer_id END) / COUNT(DISTINCT customer_id), 1) AS month_3
+    FROM aged
+    GROUP BY cohort_month
+    ORDER BY cohort_month;
+  note: |
+    코호트 분석의 3단계: ① 활동 월 정리 → ② 고객별 첫 월(코호트) → ③ 경과 개월(age)로 피벗.
+    `COUNT(DISTINCT CASE WHEN 조건 THEN id END)` 는 조건을 만족하는 **고유 고객 수**입니다 (ELSE 가 없으면 NULL → 세지 않음).
+    결과: 2005-05 코호트가 520명으로 대부분이고 리텐션이 거의 100% 입니다.
+    2005-06 코호트의 month_3, 2005-07 코호트의 month_2 가 0 인 것은 **이탈이 아니라 2005-09 이후 데이터 공백** 때문입니다.
+    코호트 표의 0 을 보면 먼저 "그 달에 데이터가 존재하는가" 부터 확인하세요.
+
+- id: ADV-003
+  title: 동시 대여 최대치 (이벤트 스윕)
+  level: 5
+  tags: [이벤트 스윕, UNION ALL, 누적합, 동시성]
+  question: |
+    각 매장(`inventory.store_id`)에서 **동시에 대여 중이던 DVD 수의 최댓값**과 그 시각을 구하세요.
+    대여 시작은 +1, 반납은 −1 로 보고, 미반납 건은 반납되지 않은 것으로 계속 대여 중이라고 봅니다.
+    같은 시각에 반납과 대여가 있으면 **반납을 먼저** 처리합니다.
+
+    - 출력: `store_id`, `peak_at`, `concurrent` — `store_id` 순 (최댓값 시각이 여럿이면 가장 이른 시각)
+
+    **사용 테이블:** `rental`, `inventory`
+  solution: |
+    WITH events AS (
+        SELECT i.store_id, r.rental_date AS at, 1 AS delta
+        FROM rental r JOIN inventory i ON i.inventory_id = r.inventory_id
+        UNION ALL
+        SELECT i.store_id, r.return_date, -1
+        FROM rental r JOIN inventory i ON i.inventory_id = r.inventory_id
+        WHERE r.return_date IS NOT NULL
+    ), running AS (
+        SELECT store_id, at,
+               SUM(delta) OVER (PARTITION BY store_id ORDER BY at, delta ROWS UNBOUNDED PRECEDING) AS concurrent
+        FROM events
+    ), ranked AS (
+        SELECT *, ROW_NUMBER() OVER (PARTITION BY store_id ORDER BY concurrent DESC, at) AS rn
+        FROM running
+    )
+    SELECT store_id, at AS peak_at, concurrent
+    FROM ranked
+    WHERE rn = 1
+    ORDER BY store_id;
+  note: |
+    "구간이 겹치는 최대 개수" 는 **시작 +1 / 끝 −1 이벤트를 시간순 누적합**하면 구할 수 있습니다 (회의실 배정, 동시 접속자 수 문제).
+    정렬에 `delta` 를 넣어 같은 시각엔 −1 이 먼저 오도록 했습니다. 이 순서에 따라 최댓값이 1씩 달라질 수 있습니다.
+
+- id: ADV-004
+  title: RFM 점수화
+  level: 4
+  tags: [RFM, NTILE, 세그먼트]
+  question: |
+    2005-08-24 를 기준일로 고객별 RFM 점수(각 1~5, 5가 가장 좋음)를 `NTILE(5)` 로 매기고, 세그먼트별 고객 수를 구하세요.
+    2006년 데이터는 제외합니다.
+
+    - R: 마지막 대여일이 최근일수록 높음 / F: 대여 횟수가 많을수록 높음 / M: 결제 합계가 클수록 높음
+    - 동률은 `customer_id` 순으로 나눕니다.
+    - 세그먼트: `챔피언`(R·F·M 모두 4 이상), `잠재 이탈`(R ≤ 2 이고 F ≥ 4), `신규성`(R ≥ 4 이고 F ≤ 2), `기타`
+
+    출력: `segment`, `customers`, `avg_m`(평균 결제 합계, 소수 2자리) — 챔피언 → 잠재 이탈 → 신규성 → 기타 순
+
+    **사용 테이블:** `rental`, `payment`
+  solution: |
+    WITH base AS (
+        SELECT r.customer_id,
+               DATEDIFF('2005-08-24', MAX(r.rental_date)) AS recency,
+               COUNT(*) AS frequency,
+               (SELECT SUM(p.amount) FROM payment p
+                 WHERE p.customer_id = r.customer_id AND p.payment_date < '2006-01-01') AS monetary
+        FROM rental r
+        WHERE r.rental_date < '2006-01-01'
+        GROUP BY r.customer_id
+    ), scored AS (
+        SELECT customer_id, monetary,
+               NTILE(5) OVER (ORDER BY recency DESC, customer_id)  AS r,
+               NTILE(5) OVER (ORDER BY frequency, customer_id)     AS f,
+               NTILE(5) OVER (ORDER BY monetary, customer_id)      AS m
+        FROM base
+    )
+    SELECT CASE WHEN r >= 4 AND f >= 4 AND m >= 4 THEN '챔피언'
+                WHEN r <= 2 AND f >= 4 THEN '잠재 이탈'
+                WHEN r >= 4 AND f <= 2 THEN '신규성'
+                ELSE '기타' END AS segment,
+           COUNT(*) AS customers,
+           ROUND(AVG(monetary), 2) AS avg_m
+    FROM scored
+    GROUP BY segment
+    ORDER BY FIELD(segment, '챔피언', '잠재 이탈', '신규성', '기타');
+  note: |
+    NTILE 을 **오름차순**으로 매기면 큰 값이 5점이 됩니다. Recency 는 "작을수록 좋음" 이라 `recency DESC` 로 정렬해 최근 고객이 5점이 되게 했습니다.
+    실무 RFM 은 이 점수로 마케팅 대상을 고릅니다. 세그먼트 조건의 순서(챔피언 먼저)가 결과를 바꾼다는 점도 확인하세요.
+
+- id: ADV-005
+  title: 장바구니 분석 (같은 날 함께 빌린 장르)
+  level: 5
+  tags: [연관 규칙, 지지도, 신뢰도, 셀프 조인]
+  question: |
+    고객이 **같은 날** 빌린 영화들을 하나의 "장바구니" 로 보고, 장르 쌍(A → B)의 연관 규칙을 구하세요.
+
+    - `support_ab`: A 와 B 를 함께 빌린 장바구니 수
+    - `confidence`: A 를 빌린 장바구니 중 B 도 빌린 비율 (소수 3자리)
+    - `lift`: confidence / (B 가 포함된 장바구니 비율) (소수 2자리)
+    - A ≠ B, `support_ab` 50 이상만
+
+    출력: `cat_a`, `cat_b`, `support_ab`, `confidence`, `lift` — `lift` 내림차순, `cat_a`, `cat_b` 순으로 상위 10개
+
+    **사용 테이블:** `rental`, `inventory`, `film_category`, `category`
+  solution: |
+    WITH basket_items AS (
+        SELECT DISTINCT r.customer_id, DATE(r.rental_date) AS day, c.name AS category
+        FROM rental r
+        JOIN inventory i      ON i.inventory_id = r.inventory_id
+        JOIN film_category fc ON fc.film_id     = i.film_id
+        JOIN category c       ON c.category_id  = fc.category_id
+    ), baskets AS (
+        SELECT COUNT(*) AS n FROM (SELECT DISTINCT customer_id, day FROM basket_items) b
+    ), item_cnt AS (
+        SELECT category, COUNT(*) AS cnt FROM basket_items GROUP BY category
+    ), pairs AS (
+        SELECT a.category AS cat_a, b.category AS cat_b, COUNT(*) AS support_ab
+        FROM basket_items a
+        JOIN basket_items b ON b.customer_id = a.customer_id
+                           AND b.day         = a.day
+                           AND b.category   <> a.category
+        GROUP BY a.category, b.category
+        HAVING COUNT(*) >= 50
+    )
+    SELECT p.cat_a, p.cat_b, p.support_ab,
+           ROUND(p.support_ab / ia.cnt, 3) AS confidence,
+           ROUND((p.support_ab / ia.cnt) / (ib.cnt / bs.n), 2) AS lift
+    FROM pairs p
+    JOIN item_cnt ia ON ia.category = p.cat_a
+    JOIN item_cnt ib ON ib.category = p.cat_b
+    CROSS JOIN baskets bs
+    ORDER BY lift DESC, p.cat_a, p.cat_b
+    LIMIT 10;
+  note: |
+    **연관 규칙 분석**: 지지도(얼마나 자주), 신뢰도(A 이면 B 일 확률), 향상도(우연 대비 몇 배). lift > 1 이면 함께 빌리는 경향이 있습니다.
+    장바구니 안의 같은 장르는 `DISTINCT` 로 한 번만 셌습니다. Sakila 의 장르 조합은 무작위로 생성되어 lift 가 1 근처에 몰리는 것이 정상입니다 —
+    "의미 있는 연관이 없다" 는 것도 분석 결과입니다.
+
+- id: ADV-006
+  title: ABC 재고 분석
+  level: 4
+  tags: [파레토, 누적 비율, 분류]
+  question: |
+    영화를 매출 기여도로 A/B/C 등급으로 나누세요. 매출 내림차순 누적 비율이 **70% 이하 = A**, **90% 이하 = B**, 나머지 = C 입니다.
+    (경계를 넘기는 영화는 그 상위 등급에 포함하지 않고 다음 등급으로 봅니다.)
+
+    - 출력: `abc`, `films`, `revenue`, `revenue_pct`(소수 1자리), `films_pct`(소수 1자리) — A → B → C 순
+
+    **사용 테이블:** `payment`, `rental`, `inventory`
+  solution: |
+    WITH film_rev AS (
+        SELECT i.film_id, SUM(p.amount) AS revenue
+        FROM payment p
+        JOIN rental r    ON r.rental_id    = p.rental_id
+        JOIN inventory i ON i.inventory_id = r.inventory_id
+        GROUP BY i.film_id
+    ), cum AS (
+        SELECT film_id, revenue,
+               SUM(revenue) OVER (ORDER BY revenue DESC, film_id ROWS UNBOUNDED PRECEDING) / SUM(revenue) OVER () AS cum_ratio
+        FROM film_rev
+    ), classed AS (
+        SELECT *, CASE WHEN cum_ratio <= 0.7 THEN 'A' WHEN cum_ratio <= 0.9 THEN 'B' ELSE 'C' END AS abc
+        FROM cum
+    )
+    SELECT abc, COUNT(*) AS films, SUM(revenue) AS revenue,
+           ROUND(100 * SUM(revenue) / SUM(SUM(revenue)) OVER (), 1) AS revenue_pct,
+           ROUND(100 * COUNT(*) / SUM(COUNT(*)) OVER (), 1) AS films_pct
+    FROM classed
+    GROUP BY abc
+    ORDER BY abc;
+  note: |
+    "상위 20% 상품이 매출 80%" 같은 파레토 법칙을 확인하는 방법입니다. 결과에서 A 등급이 전체 영화의 몇 % 인지 보세요.
+    결과: 매출 70% 를 영화 **45.7%** 가 만듭니다. 전형적인 "20/80" 보다 훨씬 고르게 퍼져 있다는 것 — 이 또한 상품 구성에 대한 중요한 발견입니다.
+    집계 결과에 다시 윈도우(`SUM(SUM(revenue)) OVER ()`)를 쓸 수 있다는 점도 기억하세요.
+
+- id: ADV-007
+  title: 연체로 인한 재고 손실 기회
+  level: 4
+  tags: [날짜 연산, 기회비용, 다중 CTE]
+  question: |
+    반납 예정일(대여일 + `rental_duration`)을 넘겨 반납된 대여에 대해 **연체 일수**(올림한 일 단위)를 구하고,
+    연체 기간에 그 DVD 를 다른 사람에게 빌려줬다면 벌 수 있었던 **기회 매출**(연체 일수 / 대여 기간 × 대여료)을 장르별로 합산하세요.
+
+    - 출력: `category`, `late_rentals`, `late_days`, `lost_revenue`(소수 2자리) — `lost_revenue` 내림차순, `category` 순
+
+    **사용 테이블:** `rental`, `inventory`, `film`, `film_category`, `category`
+  solution: |
+    WITH late AS (
+        SELECT fc.category_id, f.rental_rate, f.rental_duration,
+               CEIL(TIMESTAMPDIFF(MINUTE, r.rental_date + INTERVAL f.rental_duration DAY, r.return_date) / 1440) AS late_days
+        FROM rental r
+        JOIN inventory i      ON i.inventory_id = r.inventory_id
+        JOIN film f           ON f.film_id      = i.film_id
+        JOIN film_category fc ON fc.film_id     = f.film_id
+        WHERE r.return_date > r.rental_date + INTERVAL f.rental_duration DAY
+    )
+    SELECT c.name AS category,
+           COUNT(*) AS late_rentals,
+           SUM(late_days) AS late_days,
+           ROUND(SUM(late_days / rental_duration * rental_rate), 2) AS lost_revenue
+    FROM late
+    JOIN category c ON c.category_id = late.category_id
+    GROUP BY c.category_id, c.name
+    ORDER BY lost_revenue DESC, category;
+  note: |
+    분 단위 차이를 1440 으로 나눠 **올림**하면 "하루라도 걸치면 1일" 규칙이 됩니다. `DATEDIFF` 는 시각을 무시해 연체를 과소 집계할 수 있습니다.
+    이런 가정 기반 지표는 정의(가정)를 리포트에 함께 적어 두어야 오해가 없습니다.
+
+- id: ADV-008
+  title: 재고 가동률
+  level: 5
+  tags: [구간 합계, 가동률, 날짜 경계]
+  question: |
+    2005년 7월(7/1 00:00 ~ 8/1 00:00) 동안 각 매장 재고가 **대여 중이었던 시간의 비율**(가동률)을 구하세요.
+    대여 기간이 7월 경계를 넘으면 7월 안에 걸친 부분만 계산합니다. 미반납은 8/1 까지 대여 중으로 봅니다.
+
+    - 가동률 = Σ(7월 내 대여 시간) / (재고 장수 × 7월 전체 시간)
+    - 출력: `store_id`, `copies`, `rented_hours`, `utilization_pct`(소수 2자리) — `store_id` 순
+
+    **사용 테이블:** `rental`, `inventory`
+  solution: |
+    WITH clipped AS (
+        SELECT i.store_id,
+               TIMESTAMPDIFF(SECOND,
+                   GREATEST(r.rental_date, '2005-07-01'),
+                   LEAST(COALESCE(r.return_date, '2005-08-01'), '2005-08-01')) AS secs
+        FROM rental r
+        JOIN inventory i ON i.inventory_id = r.inventory_id
+        WHERE r.rental_date < '2005-08-01'
+          AND COALESCE(r.return_date, '2005-08-01') > '2005-07-01'
+    ), copies AS (
+        SELECT store_id, COUNT(*) AS copies FROM inventory GROUP BY store_id
+    )
+    SELECT c.store_id, c.copies,
+           ROUND(SUM(cl.secs) / 3600) AS rented_hours,
+           ROUND(100 * SUM(cl.secs) / (c.copies * TIMESTAMPDIFF(SECOND, '2005-07-01', '2005-08-01')), 2) AS utilization_pct
+    FROM copies c
+    JOIN clipped cl ON cl.store_id = c.store_id
+    GROUP BY c.store_id, c.copies
+    ORDER BY c.store_id;
+  note: |
+    **구간 겹침 계산**의 공식: 겹치는 길이 = `LEAST(끝1, 끝2) − GREATEST(시작1, 시작2)` (양수일 때만).
+    WHERE 의 두 조건은 "7월과 조금이라도 겹치는 대여" 를 고르는 표준 조건(`시작 < 구간끝 AND 끝 > 구간시작`)입니다.
+
+- id: ADV-009
+  title: 고객 생애 가치 예측용 피처 테이블
+  level: 5
+  tags: [피처 엔지니어링, 다중 CTE, 기간 분리]
+  question: |
+    5~6월 행동으로 7~8월 결제액을 예측하는 모델을 만든다고 할 때, 고객별 **피처**와 **정답(label)** 테이블을 만드세요.
+    고객 1~10번만 출력합니다.
+
+    - 피처(2005-05-01 ~ 2005-06-30): `f_rentals`(대여 수), `f_paid`(결제액), `f_categories`(빌린 장르 수), `f_avg_rate`(평균 대여료, 소수 2자리)
+    - 정답(2005-07-01 ~ 2005-08-31): `label_paid`(결제액, 없으면 0)
+
+    출력: `customer_id`, `f_rentals`, `f_paid`, `f_categories`, `f_avg_rate`, `label_paid` — `customer_id` 순
+
+    **사용 테이블:** `rental`, `payment`, `inventory`, `film`, `film_category`
+  solution: |
+    WITH feat_r AS (
+        SELECT r.customer_id, COUNT(*) AS f_rentals,
+               COUNT(DISTINCT fc.category_id) AS f_categories,
+               ROUND(AVG(f.rental_rate), 2) AS f_avg_rate
+        FROM rental r
+        JOIN inventory i      ON i.inventory_id = r.inventory_id
+        JOIN film f           ON f.film_id      = i.film_id
+        JOIN film_category fc ON fc.film_id     = f.film_id
+        WHERE r.rental_date >= '2005-05-01' AND r.rental_date < '2005-07-01'
+        GROUP BY r.customer_id
+    ), feat_p AS (
+        SELECT customer_id, SUM(amount) AS f_paid
+        FROM payment
+        WHERE payment_date >= '2005-05-01' AND payment_date < '2005-07-01'
+        GROUP BY customer_id
+    ), label AS (
+        SELECT customer_id, SUM(amount) AS label_paid
+        FROM payment
+        WHERE payment_date >= '2005-07-01' AND payment_date < '2005-09-01'
+        GROUP BY customer_id
+    )
+    SELECT c.customer_id,
+           COALESCE(fr.f_rentals, 0)    AS f_rentals,
+           COALESCE(fp.f_paid, 0)       AS f_paid,
+           COALESCE(fr.f_categories, 0) AS f_categories,
+           fr.f_avg_rate,
+           COALESCE(l.label_paid, 0)    AS label_paid
+    FROM customer c
+    LEFT JOIN feat_r fr ON fr.customer_id = c.customer_id
+    LEFT JOIN feat_p fp ON fp.customer_id = c.customer_id
+    LEFT JOIN label l   ON l.customer_id  = c.customer_id
+    WHERE c.customer_id <= 10
+    ORDER BY c.customer_id;
+  note: |
+    머신러닝 데이터 준비의 핵심은 **피처 기간과 정답 기간을 엄격히 분리**하는 것입니다. 정답 기간의 정보가 피처에 섞이면(데이터 누수) 모델이 과대평가됩니다.
+    고객 테이블을 기준으로 LEFT JOIN 해서 활동이 없는 고객도 0으로 남겼습니다 — 0도 중요한 학습 데이터입니다.
+
+- id: ADV-010
+  title: 직원별 처리 성과 비교 (매장 보정)
+  level: 4
+  tags: [윈도우, 지수화, 공정 비교]
+  question: |
+    월별로 각 직원의 결제 처리액을 구하고, **그 달 두 직원 평균 대비 지수**(평균 = 100)를 구하세요. 2005년 데이터만 대상입니다.
+
+    - 출력: `month`(YYYY-MM), `staff`(이름), `amount`, `index_vs_avg`(소수 1자리) — `month`, `staff` 순
+
+    **사용 테이블:** `payment`, `staff`
+  solution: |
+    SELECT month, staff, amount,
+           ROUND(100 * amount / AVG(amount) OVER (PARTITION BY month), 1) AS index_vs_avg
+    FROM (
+        SELECT DATE_FORMAT(p.payment_date, '%Y-%m') AS month,
+               s.first_name AS staff,
+               SUM(p.amount) AS amount
+        FROM payment p
+        JOIN staff s ON s.staff_id = p.staff_id
+        WHERE p.payment_date < '2006-01-01'
+        GROUP BY month, s.staff_id, s.first_name
+    ) t
+    ORDER BY month, staff;
+  note: |
+    달마다 전체 규모가 크게 다르므로(5월 vs 7월) 절대 금액 대신 **같은 달 평균 대비 지수**로 비교해야 공정합니다.
+    지수화(indexing)는 계절성이나 규모 차이를 제거하는 가장 간단한 방법입니다.
+
+- id: ADV-011
+  title: 영화 대여 수명 주기
+  level: 4
+  tags: [첫/마지막 이벤트, 기간 집계]
+  question: |
+    영화별 첫 대여일과 마지막 대여일 사이 기간(일), 그리고 **첫 대여 후 7일 안의 대여 비율**(초기 흥행도)을 구하세요.
+    대여 30회 이상 영화 중 초기 흥행도가 높은 5편을 출력합니다.
+
+    - 출력: `title`, `rentals`, `life_days`, `first_week_pct`(소수 1자리) — `first_week_pct` 내림차순, `title` 순
+
+    **사용 테이블:** `rental`, `inventory`, `film`
+  solution: |
+    WITH fr AS (
+        SELECT i.film_id, r.rental_date,
+               MIN(r.rental_date) OVER (PARTITION BY i.film_id) AS first_at,
+               MAX(r.rental_date) OVER (PARTITION BY i.film_id) AS last_at,
+               COUNT(*)           OVER (PARTITION BY i.film_id) AS rentals
+        FROM rental r
+        JOIN inventory i ON i.inventory_id = r.inventory_id
+    )
+    SELECT f.title, fr.rentals,
+           DATEDIFF(MAX(fr.last_at), MIN(fr.first_at)) AS life_days,
+           ROUND(100 * AVG(fr.rental_date < fr.first_at + INTERVAL 7 DAY), 1) AS first_week_pct
+    FROM fr
+    JOIN film f ON f.film_id = fr.film_id
+    WHERE fr.rentals >= 30
+    GROUP BY f.film_id, f.title, fr.rentals
+    ORDER BY first_week_pct DESC, f.title
+    LIMIT 5;
+  note: |
+    윈도우 함수로 영화별 첫 대여 시각을 각 행에 붙인 뒤, 그것과 비교해 조건부 평균을 냈습니다.
+    Sakila 는 모든 영화가 2005-05-24 이후 동시에 "출시"된 것처럼 보여 첫 주 비율이 비슷하게 나옵니다. 신작 효과를 보려면 실제 출시일 데이터가 필요합니다.
+
+- id: ADV-012
+  title: 세션화 (30분 규칙)
+  level: 5
+  tags: [세션화, LAG, 누적합]
+  question: |
+    한 고객의 대여 사이 간격이 **30분 이하**이면 같은 방문(세션)으로 봅니다.
+    고객 1~50번의 세션 수와 세션당 평균 대여 수를 구하고, 세션당 대여가 가장 많은 고객 5명을 출력하세요.
+
+    - 출력: `customer_id`, `rentals`, `sessions`, `rentals_per_session`(소수 2자리)
+    - `rentals_per_session` 내림차순, `customer_id` 순
+
+    **사용 테이블:** `rental`
+  solution: |
+    WITH g AS (
+        SELECT customer_id, rental_id, rental_date,
+               CASE WHEN TIMESTAMPDIFF(MINUTE,
+                         LAG(rental_date) OVER (PARTITION BY customer_id ORDER BY rental_date, rental_id),
+                         rental_date) <= 30
+                    THEN 0 ELSE 1 END AS new_session
+        FROM rental
+        WHERE customer_id <= 50
+    ), s AS (
+        SELECT customer_id,
+               SUM(new_session) OVER (PARTITION BY customer_id ORDER BY rental_date, rental_id ROWS UNBOUNDED PRECEDING) AS session_no
+        FROM g
+    )
+    SELECT customer_id, COUNT(*) AS rentals, COUNT(DISTINCT session_no) AS sessions,
+           ROUND(COUNT(*) / COUNT(DISTINCT session_no), 2) AS rentals_per_session
+    FROM s
+    GROUP BY customer_id
+    ORDER BY rentals_per_session DESC, customer_id
+    LIMIT 5;
+  note: |
+    웹 로그 분석의 **세션화**와 같은 기법입니다: ① 이전 이벤트와의 간격으로 "새 세션 시작" 플래그 → ② 플래그 누적합 = 세션 번호.
+    첫 대여는 LAG 가 NULL 이라 CASE 의 ELSE 로 빠져 새 세션(1)이 됩니다 — NULL 처리가 의도대로 되는지 항상 확인하세요.
+    두 윈도우(LAG, 누적합)의 정렬 기준을 **똑같이** `rental_date, rental_id` 로 맞춰야 같은 시각 대여에서도 세션 번호가 흔들리지 않습니다.
+
+- id: ADV-013
+  title: 매장 간 고객 이동
+  level: 4
+  tags: [전이 행렬, 피벗]
+  question: |
+    고객의 연속된 두 대여에서 재고 매장(`inventory.store_id`)이 어떻게 바뀌는지 **전이 행렬**을 구하세요.
+
+    - 출력: `from_store`, `to_store_1`, `to_store_2`(건수), `stay_pct`(같은 매장에 머문 비율, 소수 1자리) — `from_store` 순
+
+    **사용 테이블:** `rental`, `inventory`
+  solution: |
+    WITH seq AS (
+        SELECT i.store_id,
+               LEAD(i.store_id) OVER (PARTITION BY r.customer_id ORDER BY r.rental_date, r.rental_id) AS next_store
+        FROM rental r
+        JOIN inventory i ON i.inventory_id = r.inventory_id
+    )
+    SELECT store_id AS from_store,
+           SUM(next_store = 1) AS to_store_1,
+           SUM(next_store = 2) AS to_store_2,
+           ROUND(100 * AVG(next_store = store_id), 1) AS stay_pct
+    FROM seq
+    WHERE next_store IS NOT NULL
+    GROUP BY store_id
+    ORDER BY from_store;
+  note: |
+    `LEAD` 로 "다음 상태" 를 붙이고 (현재, 다음) 쌍을 피벗하면 **마르코프 전이 행렬**이 됩니다.
+    Sakila 고객은 등록 매장과 무관하게 두 매장 재고를 섞어 빌려서 stay_pct 가 50% 근처입니다.
+
+- id: ADV-014
+  title: 첫 대여 장르가 재방문에 미치는 영향
+  level: 5
+  tags: [첫 구매 분석, 코호트, 비교]
+  question: |
+    고객의 **첫 대여 장르**별로, 그 고객들의 **첫 30일간 대여 횟수 평균**과 전체 기간 결제 합계 평균을 비교하세요.
+
+    - 출력: `first_category`, `customers`, `avg_rentals_30d`(소수 2자리), `avg_ltv`(소수 2자리) — `avg_rentals_30d` 내림차순, `first_category` 순
+
+    **사용 테이블:** `rental`, `payment`, `inventory`, `film_category`, `category`
+  solution: |
+    WITH ordered AS (
+        SELECT r.customer_id, r.rental_date, c.name AS category,
+               ROW_NUMBER() OVER (PARTITION BY r.customer_id ORDER BY r.rental_date, r.rental_id) AS nth,
+               MIN(r.rental_date) OVER (PARTITION BY r.customer_id) AS first_at
+        FROM rental r
+        JOIN inventory i      ON i.inventory_id = r.inventory_id
+        JOIN film_category fc ON fc.film_id     = i.film_id
+        JOIN category c       ON c.category_id  = fc.category_id
+    ), cust AS (
+        SELECT customer_id,
+               MAX(CASE WHEN nth = 1 THEN category END) AS first_category,
+               SUM(rental_date < first_at + INTERVAL 30 DAY) AS rentals_30d
+        FROM ordered
+        GROUP BY customer_id
+    ), ltv AS (
+        SELECT customer_id, SUM(amount) AS paid FROM payment GROUP BY customer_id
+    )
+    SELECT cu.first_category, COUNT(*) AS customers,
+           ROUND(AVG(cu.rentals_30d), 2) AS avg_rentals_30d,
+           ROUND(AVG(l.paid), 2) AS avg_ltv
+    FROM cust cu
+    JOIN ltv l ON l.customer_id = cu.customer_id
+    GROUP BY cu.first_category
+    ORDER BY avg_rentals_30d DESC, first_category;
+  note: |
+    `MAX(CASE WHEN nth = 1 THEN category END)` 는 그룹 안에서 **특정 행의 값만 뽑는** 트릭입니다 (나머지 행은 NULL 이라 MAX 가 무시).
+    장르 간 차이가 작다면, 첫 장르보다 다른 요인이 재방문을 좌우한다는 뜻입니다. 표본 수(`customers`)가 작은 장르는 평균이 크게 흔들린다는 점도 고려하세요.
+
+- id: ADV-015
+  title: 매출 이상일 탐지
+  level: 4
+  tags: [이동 평균, 표준편차, 이상치]
+  question: |
+    2005-07-05 ~ 2005-08-23 일별 매출에 대해 **직전 7개 데이터일**의 평균과 표준편차를 구하고, 당일 매출이 (평균 ± 2 × 표준편차) 범위를 벗어난 날을 찾으세요.
+    직전 데이터가 7개 미만인 초반 날짜는 제외합니다.
+
+    - 출력: `day`, `revenue`, `ma7`, `sd7`(소수 2자리), `direction`(`급증`/`급감`) — `day` 순
+
+    **사용 테이블:** `payment`
+  solution: |
+    WITH d AS (
+        SELECT DATE(payment_date) AS day, SUM(amount) AS revenue
+        FROM payment
+        WHERE payment_date >= '2005-07-05' AND payment_date < '2005-08-24'
+        GROUP BY day
+    ), w AS (
+        SELECT day, revenue,
+               AVG(revenue)        OVER x AS ma7,
+               STDDEV_POP(revenue) OVER x AS sd7,
+               COUNT(*)            OVER x AS n
+        FROM d
+        WINDOW x AS (ORDER BY day ROWS BETWEEN 7 PRECEDING AND 1 PRECEDING)
+    )
+    SELECT day, revenue, ROUND(ma7, 2) AS ma7, ROUND(sd7, 2) AS sd7,
+           CASE WHEN revenue > ma7 + 2 * sd7 THEN '급증' ELSE '급감' END AS direction
+    FROM w
+    WHERE n = 7
+      AND (revenue > ma7 + 2 * sd7 OR revenue < ma7 - 2 * sd7)
+    ORDER BY day;
+  note: |
+    프레임을 `7 PRECEDING AND 1 PRECEDING` 으로 잡아 **당일을 제외한** 과거만으로 기준선을 만들었습니다. 당일을 포함하면 이상치가 기준선을 끌어당겨 탐지력이 떨어집니다.
+    `COUNT(*) OVER x` 로 윈도우가 꽉 찼는지 확인하는 것도 실무에서 자주 쓰는 안전장치입니다.
+    결과는 7/26 과 8/16 두 날의 "급감" 입니다. 이날 대여는 각각 33건, 23건으로 평소(하루 600건 이상)의 5% 수준입니다.
+    실제 수요 급감이라기보다 **데이터가 일부만 기록된 날**일 가능성이 큽니다. 이상치 탐지 결과는 항상 원천 데이터로 재확인하세요.
+
+- id: ADV-016
+  title: 배우 조합의 흥행력
+  level: 5
+  tags: [셀프 조인, 집계 후 조인, 상대 비교]
+  question: |
+    함께 5편 이상 출연한 배우 쌍에 대해, **함께 출연한 영화의 평균 대여 횟수**가 두 배우 각각의 전체 출연작 평균 대여 횟수보다 얼마나 높은지 구하세요.
+
+    - `pair_avg`: 공동 출연작의 평균 대여 횟수
+    - `solo_avg`: 두 배우 각자의 전체 출연작 평균 대여 횟수의 평균
+    - `lift`: pair_avg / solo_avg (소수 2자리)
+    - 대여 횟수는 재고가 없는 영화를 0으로 포함
+
+    출력: `actor_a`, `actor_b`, `films_together`, `pair_avg`, `solo_avg`, `lift` (평균은 소수 2자리) — `lift` 내림차순, `actor_a`, `actor_b` 순으로 상위 5쌍
+
+    **사용 테이블:** `film_actor`, `actor`, `inventory`, `rental`, `film`
+  solution: |
+    WITH film_rentals AS (
+        SELECT f.film_id, COUNT(r.rental_id) AS rentals
+        FROM film f
+        LEFT JOIN inventory i ON i.film_id      = f.film_id
+        LEFT JOIN rental r    ON r.inventory_id = i.inventory_id
+        GROUP BY f.film_id
+    ), actor_avg AS (
+        SELECT fa.actor_id, AVG(fr.rentals) AS avg_rentals
+        FROM film_actor fa
+        JOIN film_rentals fr ON fr.film_id = fa.film_id
+        GROUP BY fa.actor_id
+    ), pairs AS (
+        SELECT a.actor_id AS a_id, b.actor_id AS b_id,
+               COUNT(*) AS films_together, AVG(fr.rentals) AS pair_avg
+        FROM film_actor a
+        JOIN film_actor b    ON b.film_id = a.film_id AND b.actor_id > a.actor_id
+        JOIN film_rentals fr ON fr.film_id = a.film_id
+        GROUP BY a.actor_id, b.actor_id
+        HAVING COUNT(*) >= 5
+    )
+    SELECT CONCAT(x.first_name, ' ', x.last_name) AS actor_a,
+           CONCAT(y.first_name, ' ', y.last_name) AS actor_b,
+           p.films_together,
+           ROUND(p.pair_avg, 2) AS pair_avg,
+           ROUND((aa.avg_rentals + ab.avg_rentals) / 2, 2) AS solo_avg,
+           ROUND(p.pair_avg / ((aa.avg_rentals + ab.avg_rentals) / 2), 2) AS lift
+    FROM pairs p
+    JOIN actor_avg aa ON aa.actor_id = p.a_id
+    JOIN actor_avg ab ON ab.actor_id = p.b_id
+    JOIN actor x ON x.actor_id = p.a_id
+    JOIN actor y ON y.actor_id = p.b_id
+    ORDER BY lift DESC, actor_a, actor_b
+    LIMIT 5;
+  note: |
+    "A 와 B 가 같이 나오면 더 잘 되나?" 를 **각자의 기준선 대비 상대값**으로 측정했습니다. 절대값만 보면 원래 인기 배우끼리의 조합이 늘 상위에 옵니다.
+    공동 출연 5편은 작은 표본이므로 lift 가 높아도 우연일 수 있습니다 — 표본 크기를 결과와 함께 보여주는 것이 정직한 분석입니다.
+
+- id: ADV-017
+  title: 미반납 DVD 현황 리포트
+  level: 4
+  tags: [실무 리포트, 다중 조인, 연락처]
+  question: |
+    데이터 마지막 날(`2006-02-14` 기준, 시각 무시)에 반납되지 않은 대여를 **고객별로** 정리한 연락 리포트를 만드세요.
+
+    - 출력: `customer`(이름 성), `email`, `phone`, `unreturned`(미반납 장수), `titles`(제목을 쉼표로, 제목 순), `oldest_rental`(가장 오래된 미반납 대여일)
+    - 미반납 장수 내림차순, `oldest_rental`, `customer` 순으로 상위 10명
+
+    **사용 테이블:** `rental`, `customer`, `address`, `inventory`, `film`
+  solution: |
+    SELECT CONCAT(c.first_name, ' ', c.last_name) AS customer,
+           c.email, a.phone,
+           COUNT(*) AS unreturned,
+           GROUP_CONCAT(f.title ORDER BY f.title SEPARATOR ', ') AS titles,
+           MIN(r.rental_date) AS oldest_rental
+    FROM rental r
+    JOIN customer c  ON c.customer_id  = r.customer_id
+    JOIN address a   ON a.address_id   = c.address_id
+    JOIN inventory i ON i.inventory_id = r.inventory_id
+    JOIN film f      ON f.film_id      = i.film_id
+    WHERE r.return_date IS NULL
+    GROUP BY c.customer_id, c.first_name, c.last_name, c.email, a.phone
+    ORDER BY unreturned DESC, oldest_rental, customer
+    LIMIT 10;
+  note: |
+    분석 결과를 바로 **실행 가능한 리포트**(누구에게, 무엇을, 어떻게 연락할지)로 만드는 연습입니다.
+    `GROUP_CONCAT` 으로 상세 목록을 한 칸에 모으면 담당자가 행 하나만 보고도 조치할 수 있습니다.
+
+- id: ADV-018
+  title: 국가별 매출 집중도 (HHI)
+  level: 5
+  tags: [집중도 지수, HHI, 다단계 집계]
+  question: |
+    고객이 10명 이상인 국가별로 **고객 매출 집중도**를 허핀달-허쉬만 지수(HHI = Σ(각 고객 매출 점유율²) × 10000)로 구하세요.
+    HHI 가 높을수록 소수 고객에게 매출이 몰려 있습니다.
+
+    - 출력: `country`, `customers`, `revenue`, `hhi`(정수 반올림), `top_customer_share_pct`(최대 고객 점유율, 소수 1자리)
+    - `hhi` 내림차순, `country` 순
+
+    **사용 테이블:** `payment`, `customer`, `address`, `city`, `country`
+  solution: |
+    WITH cust AS (
+        SELECT co.country, c.customer_id, SUM(p.amount) AS paid
+        FROM payment p
+        JOIN customer c ON c.customer_id = p.customer_id
+        JOIN address a  ON a.address_id  = c.address_id
+        JOIN city ci    ON ci.city_id    = a.city_id
+        JOIN country co ON co.country_id = ci.country_id
+        GROUP BY co.country, c.customer_id
+    ), share AS (
+        SELECT country, paid,
+               paid / SUM(paid) OVER (PARTITION BY country) AS s,
+               COUNT(*) OVER (PARTITION BY country) AS customers
+        FROM cust
+    )
+    SELECT country, MAX(customers) AS customers, SUM(paid) AS revenue,
+           ROUND(SUM(s * s) * 10000) AS hhi,
+           ROUND(100 * MAX(s), 1) AS top_customer_share_pct
+    FROM share
+    WHERE customers >= 10
+    GROUP BY country
+    ORDER BY hhi DESC, country;
+  note: |
+    고객 N명이 매출을 똑같이 나누면 HHI = 10000 / N 입니다. 그래서 HHI 는 **고객 수에 크게 영향**을 받습니다 —
+    고객 10명 국가의 최솟값은 1000, 30명 국가는 333 입니다. 비교할 때는 `10000 / customers` 기준선과 함께 보세요.
+
+- id: ADV-019
+  title: 대여 기간 정책 적정성
+  level: 4
+  tags: [분위수, 정책 분석, 윈도우]
+  question: |
+    영화의 대여 기간 정책(`rental_duration` 3~7일)별로 실제 대여 기간(반납 − 대여, 일 단위 소수)의 **중앙값**과 **기한 내 반납률**을 구하세요.
+
+    - 출력: `rental_duration`, `rentals`, `median_days`(소수 2자리), `on_time_pct`(소수 1자리) — `rental_duration` 순
+
+    **사용 테이블:** `rental`, `inventory`, `film`
+  solution: |
+    WITH d AS (
+        SELECT f.rental_duration,
+               TIMESTAMPDIFF(MINUTE, r.rental_date, r.return_date) / 1440 AS days
+        FROM rental r
+        JOIN inventory i ON i.inventory_id = r.inventory_id
+        JOIN film f      ON f.film_id      = i.film_id
+        WHERE r.return_date IS NOT NULL
+    ), ranked AS (
+        SELECT rental_duration, days,
+               ROW_NUMBER() OVER (PARTITION BY rental_duration ORDER BY days) AS rn,
+               COUNT(*)     OVER (PARTITION BY rental_duration) AS cnt
+        FROM d
+    )
+    SELECT rental_duration, MAX(cnt) AS rentals,
+           ROUND(AVG(CASE WHEN rn IN (FLOOR((cnt + 1) / 2), CEIL((cnt + 1) / 2)) THEN days END), 2) AS median_days,
+           ROUND(100 * AVG(days <= rental_duration), 1) AS on_time_pct
+    FROM ranked
+    GROUP BY rental_duration
+    ORDER BY rental_duration;
+  note: |
+    정책(허용 기간)이 길어도 실제 대여 기간 중앙값이 거의 같다면, **고객 행동은 정책과 무관**하다는 뜻입니다.
+    그렇다면 짧은 정책일수록 연체가 많아지고, 정책을 바꾸면 연체료 수익이 달라질 것입니다 — 분석이 정책 질문으로 이어지는 전형적인 예입니다.
+    중앙값을 CASE 로 골라 AVG 하는 방식으로, 한 번의 GROUP BY 안에서 다른 집계와 함께 계산했습니다.
+
+- id: ADV-020
+  title: 종합 매장 대시보드 쿼리
+  level: 5
+  tags: [대시보드, 다중 CTE, KPI]
+  question: |
+    매장(재고 `store_id` 기준)별로 2005-08 한 달의 KPI 를 한 행에 모으세요.
+
+    | 컬럼 | 정의 |
+    |---|---|
+    | `rentals` | 8월 대여 건수 |
+    | `revenue` | 8월 대여에 연결된 결제 합계 |
+    | `active_customers` | 8월에 대여한 고유 고객 수 |
+    | `arpu` | revenue / active_customers (소수 2자리) |
+    | `new_customers` | 8월이 첫 대여 월인 고객 수 (이 매장에서의 첫 대여 기준) |
+    | `top_category` | 8월 대여 건수 1위 장르 (동점이면 이름순) |
+    | `late_pct` | 8월 대여 중 연체 반납 비율 (미반납 제외, 소수 1자리) |
+
+    출력은 위 순서 + 맨 앞 `store_id` — `store_id` 순
+
+    **사용 테이블:** `rental`, `inventory`, `payment`, `film`, `film_category`, `category`
+  solution: |
+    WITH aug AS (
+        SELECT r.rental_id, r.customer_id, r.rental_date, r.return_date, i.store_id, i.film_id, f.rental_duration
+        FROM rental r
+        JOIN inventory i ON i.inventory_id = r.inventory_id
+        JOIN film f      ON f.film_id      = i.film_id
+        WHERE r.rental_date >= '2005-08-01' AND r.rental_date < '2005-09-01'
+    ), base AS (
+        SELECT store_id, COUNT(*) AS rentals, COUNT(DISTINCT customer_id) AS active_customers,
+               ROUND(100 * AVG(CASE WHEN return_date IS NOT NULL
+                                    THEN return_date > rental_date + INTERVAL rental_duration DAY END), 1) AS late_pct
+        FROM aug
+        GROUP BY store_id
+    ), rev AS (
+        SELECT a.store_id, SUM(p.amount) AS revenue
+        FROM aug a JOIN payment p ON p.rental_id = a.rental_id
+        GROUP BY a.store_id
+    ), first_seen AS (
+        SELECT i.store_id, r.customer_id, MIN(r.rental_date) AS first_at
+        FROM rental r JOIN inventory i ON i.inventory_id = r.inventory_id
+        GROUP BY i.store_id, r.customer_id
+    ), newc AS (
+        SELECT store_id, COUNT(*) AS new_customers
+        FROM first_seen
+        WHERE first_at >= '2005-08-01' AND first_at < '2005-09-01'
+        GROUP BY store_id
+    ), cat AS (
+        SELECT a.store_id, c.name,
+               ROW_NUMBER() OVER (PARTITION BY a.store_id ORDER BY COUNT(*) DESC, c.name) AS rn
+        FROM aug a
+        JOIN film_category fc ON fc.film_id    = a.film_id
+        JOIN category c       ON c.category_id = fc.category_id
+        GROUP BY a.store_id, c.name
+    )
+    SELECT b.store_id, b.rentals, rv.revenue, b.active_customers,
+           ROUND(rv.revenue / b.active_customers, 2) AS arpu,
+           COALESCE(n.new_customers, 0) AS new_customers,
+           ct.name AS top_category,
+           b.late_pct
+    FROM base b
+    JOIN rev rv     ON rv.store_id = b.store_id
+    LEFT JOIN newc n ON n.store_id = b.store_id
+    JOIN cat ct     ON ct.store_id = b.store_id AND ct.rn = 1
+    ORDER BY b.store_id;
+  note: |
+    대시보드 쿼리는 **KPI 마다 CTE 하나**로 나눠 각각 매장 단위까지 집계한 뒤 마지막에 조인합니다. 이렇게 하면 팬아웃 없이 정확하고, KPI 추가·수정도 쉽습니다.
+    `new_customers` 처럼 0이 될 수 있는 지표는 LEFT JOIN + COALESCE 로, 정의가 까다로운 지표(`late_pct` 의 미반납 제외)는 CASE 로 명확히 했습니다.

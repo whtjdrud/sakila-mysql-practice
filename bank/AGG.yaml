@@ -1,0 +1,558 @@
+# 집계: 집계 함수 · GROUP BY · HAVING · ROLLUP
+- id: AGG-001
+  title: 전체 영화 통계
+  level: 1
+  tags: [COUNT, AVG, MIN, MAX]
+  question: |
+    영화 전체의 편수 `films`, 평균 상영 시간 `avg_length`(소수 1자리), 최단 `min_length`, 최장 `max_length` 를 한 행으로 구하세요.
+
+    **사용 테이블:** `film`
+  solution: |
+    SELECT COUNT(*)              AS films,
+           ROUND(AVG(length), 1) AS avg_length,
+           MIN(length)           AS min_length,
+           MAX(length)           AS max_length
+    FROM film;
+  note: |
+    `GROUP BY` 없이 집계 함수를 쓰면 테이블 전체가 하나의 그룹이 되어 **항상 1행**이 나옵니다 (테이블이 비어 있어도 1행).
+
+- id: AGG-002
+  title: COUNT 의 세 가지 형태
+  level: 1
+  tags: [COUNT, DISTINCT, NULL]
+  question: |
+    `rental` 테이블에서 다음을 한 행으로 구하세요.
+
+    - `all_rows`: 전체 행 수
+    - `returned`: `return_date` 가 있는 행 수
+    - `customers`: 대여한 고객 수(중복 제거)
+
+    **사용 테이블:** `rental`
+  solution: |
+    SELECT COUNT(*)                    AS all_rows,
+           COUNT(return_date)          AS returned,
+           COUNT(DISTINCT customer_id) AS customers
+    FROM rental;
+  note: |
+    - `COUNT(*)`: NULL 여부와 관계없이 **행**을 셉니다.
+    - `COUNT(컬럼)`: 그 컬럼이 **NULL 이 아닌** 행만 셉니다.
+    - `COUNT(DISTINCT 컬럼)`: NULL 이 아닌 **고유 값**의 개수입니다.
+
+- id: AGG-003
+  title: 장르별 영화 수
+  level: 1
+  tags: [GROUP BY, JOIN, COUNT]
+  question: |
+    각 장르(category)별로 등록된 영화 수를 구하세요.
+
+    - 출력: `category`(장르명), `film_count`(영화 수)
+    - 영화 수 내림차순, 같으면 장르명 오름차순
+
+    **사용 테이블:** `category`, `film_category`
+  solution: |
+    SELECT c.name   AS category,
+           COUNT(*) AS film_count
+    FROM category c
+    JOIN film_category fc ON fc.category_id = c.category_id
+    GROUP BY c.category_id, c.name
+    ORDER BY film_count DESC, category;
+  note: |
+    - `film_category` 는 영화와 장르의 **연결 테이블**입니다. Sakila 는 영화 1편당 장르가 정확히 1개라 합계가 1,000편입니다.
+    - `GROUP BY c.category_id, c.name` 처럼 PK 를 함께 묶으면 이름이 같은 장르가 생겨도 안전합니다.
+    - 결과: **Sports(74편)** 최다, **Music(51편)** 최소. Games·Sci-Fi(61편), Classics·Travel(57편)은 동수라
+      2차 정렬 기준이 순서를 결정합니다 — 정렬 기준을 끝까지 명시해야 결과가 매번 같습니다.
+
+- id: AGG-004
+  title: 등급별 평균 대여료
+  level: 1
+  tags: [GROUP BY, AVG]
+  question: |
+    관람 등급(`rating`)별 영화 수 `films` 와 평균 대여료 `avg_rate`(소수 2자리)를 구하세요. `rating` 순.
+
+    **사용 테이블:** `film`
+  solution: |
+    SELECT rating, COUNT(*) AS films, ROUND(AVG(rental_rate), 2) AS avg_rate
+    FROM film
+    GROUP BY rating
+    ORDER BY rating;
+  note: |
+    `GROUP BY` 에 쓴 컬럼과 집계 함수만 SELECT 에 올 수 있습니다 (`ONLY_FULL_GROUP_BY`, MySQL 5.7.5+ 기본값).
+
+- id: AGG-005
+  title: 고객별 결제 합계 TOP 10
+  level: 2
+  tags: [GROUP BY, SUM, ORDER BY]
+  question: |
+    고객별 결제 건수 `payments` 와 합계 `total` 을 구해, 합계가 큰 10명의 `customer_id` 와 함께 출력하세요.
+    `total` 내림차순, 같으면 `customer_id` 순.
+
+    **사용 테이블:** `payment`
+  solution: |
+    SELECT customer_id, COUNT(*) AS payments, SUM(amount) AS total
+    FROM payment
+    GROUP BY customer_id
+    ORDER BY total DESC, customer_id
+    LIMIT 10;
+  note: |
+    고객 이름이 필요 없다면 `customer` 를 조인하지 않고 `payment` 만으로 집계하는 것이 가장 빠릅니다. 조인은 집계 후에 해도 됩니다.
+
+- id: AGG-006
+  title: HAVING 으로 그룹 거르기
+  level: 2
+  tags: [HAVING]
+  question: |
+    결제 합계가 **180 이상**인 고객의 `customer_id`, `total` 을 `total` 내림차순, `customer_id` 순으로 조회하세요.
+
+    **사용 테이블:** `payment`
+  solution: |
+    SELECT customer_id, SUM(amount) AS total
+    FROM payment
+    GROUP BY customer_id
+    HAVING total >= 180
+    ORDER BY total DESC, customer_id;
+  note: |
+    `WHERE` 는 **그룹을 만들기 전 행**을, `HAVING` 은 **그룹을 만든 후 결과**를 거릅니다.
+    `WHERE SUM(amount) >= 180` 은 오류입니다. MySQL 은 HAVING 에서 SELECT 별칭(`total`)을 허용하지만 표준 SQL 은 아닙니다.
+
+- id: AGG-007
+  title: WHERE 와 HAVING 함께 쓰기
+  level: 2
+  tags: [WHERE, HAVING]
+  question: |
+    2005년 7월 결제만 대상으로, 그 달에 **결제를 10건 이상** 한 고객의 `customer_id`, `payments`, `total` 을 구하세요.
+    `payments` 내림차순, `customer_id` 순.
+
+    **사용 테이블:** `payment`
+  solution: |
+    SELECT customer_id, COUNT(*) AS payments, SUM(amount) AS total
+    FROM payment
+    WHERE payment_date >= '2005-07-01' AND payment_date < '2005-08-01'
+    GROUP BY customer_id
+    HAVING COUNT(*) >= 10
+    ORDER BY payments DESC, customer_id;
+  note: |
+    행 단위로 거를 수 있는 조건(기간)은 **WHERE 에 두는 것이 효율적**입니다. 집계 대상 행이 줄어들기 때문입니다.
+
+- id: AGG-008
+  title: 매장별 월간 매출
+  level: 2
+  tags: [GROUP BY, DATE_FORMAT, JOIN]
+  question: |
+    매장(store)별, 월별 결제 건수와 합계를 구하세요.
+
+    - 출력: `store_id`, `month`(YYYY-MM), `payments`(건수), `revenue`(합계)
+    - 매장 → 월 순 정렬
+    - 결제(`payment`)는 처리한 직원(`staff`)을 통해 매장과 연결됩니다.
+
+    **사용 테이블:** `payment`, `staff`
+  solution: |
+    SELECT s.store_id,
+           DATE_FORMAT(p.payment_date, '%Y-%m') AS month,
+           COUNT(*)                             AS payments,
+           SUM(p.amount)                        AS revenue
+    FROM payment p
+    JOIN staff s ON s.staff_id = p.staff_id
+    GROUP BY s.store_id, month
+    ORDER BY s.store_id, month;
+  note: |
+    - `payment` 에는 `store_id` 가 없어 **처리 직원의 소속 매장**으로 연결했습니다. 고객의 매장(`customer.store_id`)으로 연결하면 결과가 달라지므로 "매장 매출"의 정의를 먼저 정해야 합니다.
+    - 전체 매출 **67,416.51**(16,049건), 두 매장이 거의 반반이며 **2005-07 이 정점**입니다.
+    - 2005-09 ~ 2006-01 은 **데이터가 없고**, 2006-02 는 2/14 하루치뿐입니다. "2006-02 매출 급감"은 추세가 아니라 **데이터 수집 기간의 경계**입니다. 시계열 분석 전에는 `MIN/MAX` 날짜와 빈 구간을 먼저 확인하세요.
+
+- id: AGG-009
+  title: 여러 컬럼으로 그룹핑
+  level: 2
+  tags: [GROUP BY, 다중 컬럼]
+  question: |
+    등급(`rating`)과 대여료(`rental_rate`) 조합별 영화 수를 구하세요. `rating`, `rental_rate` 순.
+
+    **사용 테이블:** `film`
+  solution: |
+    SELECT rating, rental_rate, COUNT(*) AS films
+    FROM film
+    GROUP BY rating, rental_rate
+    ORDER BY rating, rental_rate;
+  note: |
+    그룹은 **컬럼 값의 조합**마다 하나씩 생깁니다. 등급 5개 × 대여료 3종 = 최대 15그룹입니다.
+
+- id: AGG-010
+  title: 문자열 이어 붙이기 집계
+  level: 2
+  tags: [GROUP_CONCAT]
+  question: |
+    `film_id` 1~5번 영화마다 출연 배우의 성(`last_name`)을 알파벳 순으로 쉼표로 이어 붙인 `actors` 를 구하세요.
+
+    - 출력: `film_id`, `actor_count`, `actors` — `film_id` 순
+
+    **사용 테이블:** `film_actor`, `actor`
+  solution: |
+    SELECT fa.film_id,
+           COUNT(*) AS actor_count,
+           GROUP_CONCAT(a.last_name ORDER BY a.last_name, a.actor_id SEPARATOR ', ') AS actors
+    FROM film_actor fa
+    JOIN actor a ON a.actor_id = fa.actor_id
+    WHERE fa.film_id <= 5
+    GROUP BY fa.film_id
+    ORDER BY fa.film_id;
+  note: |
+    `GROUP_CONCAT` 은 기본 최대 길이가 **1024바이트**(`group_concat_max_len`)라 넘으면 조용히 잘립니다. 긴 목록을 만들 때는 이 설정을 늘려야 합니다.
+
+- id: AGG-011
+  title: 조건부 집계
+  level: 2
+  tags: [SUM, 조건식, 피벗 기초]
+  question: |
+    매장(`customer.store_id`)별로 전체 고객 수, 활성 고객 수, 비활성 고객 수를 구하세요.
+
+    - 출력: `store_id`, `total`, `active_cnt`, `inactive_cnt` — `store_id` 순
+
+    **사용 테이블:** `customer`
+  solution: |
+    SELECT store_id,
+           COUNT(*)                                 AS total,
+           SUM(CASE WHEN active = 1 THEN 1 ELSE 0 END) AS active_cnt,
+           SUM(CASE WHEN active = 0 THEN 1 ELSE 0 END) AS inactive_cnt
+    FROM customer
+    GROUP BY store_id
+    ORDER BY store_id;
+  note: |
+    `SUM(CASE WHEN 조건 THEN 1 ELSE 0 END)` 는 어느 DBMS 에서나 통하는 조건부 개수 세기입니다.
+    MySQL 에서는 `SUM(active = 1)` 로 줄여 쓸 수도 있습니다.
+
+- id: AGG-012
+  title: 국가별 고객 수 TOP 10
+  level: 2
+  tags: [GROUP BY, 다중 조인]
+  question: |
+    고객이 가장 많은 국가 10곳의 `country`, `customers` 를 구하세요. `customers` 내림차순, `country` 순.
+
+    **사용 테이블:** `customer`, `address`, `city`, `country`
+  solution: |
+    SELECT co.country, COUNT(*) AS customers
+    FROM customer c
+    JOIN address a  ON a.address_id  = c.address_id
+    JOIN city ci    ON ci.city_id    = a.city_id
+    JOIN country co ON co.country_id = ci.country_id
+    GROUP BY co.country_id, co.country
+    ORDER BY customers DESC, co.country
+    LIMIT 10;
+  note: |
+    주소 계층은 `customer → address → city → country` 로 3단계 조인이 필요합니다.
+
+- id: AGG-013
+  title: 배우별 출연 편수 분포
+  level: 3
+  tags: [GROUP BY, 2단계 집계, 파생 테이블]
+  question: |
+    배우별 출연 편수를 구한 뒤, **출연 편수별로 배우가 몇 명인지** 분포를 구하세요.
+
+    - 출력: `film_count`(출연 편수), `actors`(그 편수의 배우 수) — `film_count` 순
+
+    **사용 테이블:** `film_actor`
+  solution: |
+    SELECT film_count, COUNT(*) AS actors
+    FROM (
+        SELECT actor_id, COUNT(*) AS film_count
+        FROM film_actor
+        GROUP BY actor_id
+    ) t
+    GROUP BY film_count
+    ORDER BY film_count;
+  note: |
+    집계 결과를 다시 집계하려면 FROM 절 서브쿼리(**파생 테이블**)로 한 번 감싸야 합니다. 파생 테이블에는 별칭(`t`)이 필수입니다.
+    히스토그램/분포를 구할 때 자주 쓰는 패턴입니다.
+
+- id: AGG-014
+  title: ROLLUP 으로 소계 · 총계
+  level: 3
+  tags: [ROLLUP, GROUPING]
+  question: |
+    매장(`staff.store_id`)별, 월별 매출에 **매장별 소계와 전체 총계**를 함께 출력하세요.
+
+    - 출력: `store`, `month`, `revenue`
+    - 소계 행의 `month` 는 `'소계'`, 총계 행의 `store` 는 `'전체'`, `month` 는 `'총계'` 로 표시
+    - 매장 → 월 순 (소계가 각 매장의 마지막, 총계가 맨 마지막)
+
+    **사용 테이블:** `payment`, `staff`
+  solution: |
+    SELECT CASE WHEN GROUPING(store_id) = 1 THEN '전체' ELSE CAST(store_id AS CHAR) END AS store,
+           CASE WHEN GROUPING(store_id) = 1 THEN '총계'
+                WHEN GROUPING(month) = 1    THEN '소계'
+                ELSE month END AS month,
+           SUM(amount) AS revenue
+    FROM (
+        SELECT s.store_id, DATE_FORMAT(p.payment_date, '%Y-%m') AS month, p.amount
+        FROM payment p
+        JOIN staff s ON s.staff_id = p.staff_id
+    ) t
+    GROUP BY store_id, month WITH ROLLUP
+    ORDER BY GROUPING(store_id), store_id, GROUPING(month), month;
+  note: |
+    `WITH ROLLUP` 은 GROUP BY 컬럼을 오른쪽부터 하나씩 빼며 소계를 만들고 마지막에 총계를 붙입니다.
+    소계 행의 컬럼은 NULL 이 되는데, 원래 데이터의 NULL 과 구분하려면 `GROUPING(컬럼)`(MySQL 8.0+)을 써야 합니다.
+    `GROUPING()` 을 ORDER BY 에 쓰면 소계·총계 위치를 원하는 대로 정렬할 수 있습니다.
+    GROUP BY 에 `DATE_FORMAT(...)` 같은 **식**을 직접 쓰면 ROLLUP·GROUPING 과 함께 쓸 때 `ONLY_FULL_GROUP_BY` 오류가 나기 쉬워,
+    파생 테이블에서 `month` 컬럼으로 먼저 만들어 두었습니다.
+
+- id: AGG-015
+  title: 평균보다 긴 영화가 많은 장르
+  level: 3
+  tags: [HAVING, 조건부 집계]
+  question: |
+    장르별로 상영 시간 120분 초과 영화의 **비율**을 구하고, 그 비율이 40% 이상인 장르만 출력하세요.
+
+    - 출력: `category`, `films`, `long_films`, `long_pct`(백분율 소수 1자리) — `long_pct` 내림차순, `category` 순
+
+    **사용 테이블:** `category`, `film_category`, `film`
+  solution: |
+    SELECT c.name AS category,
+           COUNT(*) AS films,
+           SUM(f.length > 120) AS long_films,
+           ROUND(100 * AVG(f.length > 120), 1) AS long_pct
+    FROM category c
+    JOIN film_category fc ON fc.category_id = c.category_id
+    JOIN film f           ON f.film_id      = fc.film_id
+    GROUP BY c.category_id, c.name
+    HAVING AVG(f.length > 120) >= 0.4
+    ORDER BY long_pct DESC, category;
+  note: |
+    비율 조건은 `HAVING long_pct >= 40` 처럼 반올림된 값보다 **원래 값(`AVG(...) >= 0.4`)** 으로 비교하는 것이 정확합니다.
+    반올림 때문에 39.96% 가 40.0% 로 표시되어 경계에서 결과가 달라질 수 있기 때문입니다.
+
+- id: AGG-016
+  title: 고객별 평균 결제 금액 분포 구간
+  level: 3
+  tags: [FLOOR, 구간화, 히스토그램]
+  question: |
+    고객별 결제 합계를 20 단위 구간으로 나눠 구간별 고객 수를 구하세요.
+    구간은 `40-59.99`, `60-79.99` … 처럼 표시합니다.
+
+    - 출력: `bucket_start`, `bucket`(예: `60-79.99`), `customers` — `bucket_start` 순
+
+    **사용 테이블:** `payment`
+  solution: |
+    SELECT FLOOR(total / 20) * 20 AS bucket_start,
+           CONCAT(FLOOR(total / 20) * 20, '-', FLOOR(total / 20) * 20 + 19.99) AS bucket,
+           COUNT(*) AS customers
+    FROM (
+        SELECT customer_id, SUM(amount) AS total
+        FROM payment
+        GROUP BY customer_id
+    ) t
+    GROUP BY bucket_start, bucket
+    ORDER BY bucket_start;
+  note: |
+    `FLOOR(값 / 폭) * 폭` 은 값을 구간 시작점으로 내리는 **버킷팅** 공식입니다. 분포를 볼 때 가장 먼저 쓰는 도구입니다.
+
+- id: AGG-017
+  title: 중복 데이터 찾기
+  level: 2
+  tags: [HAVING, 중복 검사]
+  question: |
+    이름(`first_name`)이 같은 배우가 **3명 이상**인 이름을 찾아 `first_name`, `cnt` 를 구하세요.
+    `cnt` 내림차순, `first_name` 순.
+
+    **사용 테이블:** `actor`
+  solution: |
+    SELECT first_name, COUNT(*) AS cnt
+    FROM actor
+    GROUP BY first_name
+    HAVING COUNT(*) >= 3
+    ORDER BY cnt DESC, first_name;
+  note: |
+    `GROUP BY 키 HAVING COUNT(*) > 1` 은 **중복 데이터를 찾는 기본 패턴**입니다. 데이터 정합성 점검에 매우 자주 씁니다.
+
+- id: AGG-018
+  title: 직원별 처리 실적
+  level: 2
+  tags: [GROUP BY, JOIN]
+  question: |
+    직원별로 처리한 결제 건수와 합계, 건당 평균(소수 2자리)을 구하세요.
+
+    - 출력: `staff_id`, `staff_name`(이름 성), `payments`, `total`, `avg_amount` — `staff_id` 순
+
+    **사용 테이블:** `payment`, `staff`
+  solution: |
+    SELECT s.staff_id,
+           CONCAT(s.first_name, ' ', s.last_name) AS staff_name,
+           COUNT(*) AS payments,
+           SUM(p.amount) AS total,
+           ROUND(AVG(p.amount), 2) AS avg_amount
+    FROM staff s
+    JOIN payment p ON p.staff_id = s.staff_id
+    GROUP BY s.staff_id, s.first_name, s.last_name
+    ORDER BY s.staff_id;
+  note: |
+    SELECT 에 표현식(`CONCAT(...)`)을 쓰려면 그 재료인 컬럼들이 GROUP BY 에 있거나, GROUP BY 에 PK 가 있어야 합니다.
+    MySQL 은 **PK 에 함수적으로 종속된 컬럼**을 허용하므로 `GROUP BY s.staff_id` 만으로도 동작합니다.
+
+- id: AGG-019
+  title: 금액대별 결제 건수
+  level: 2
+  tags: [GROUP BY, 정확한 값 그룹]
+  question: |
+    결제 금액(`amount`)별 결제 건수를 구하고, 가장 흔한 금액 5개를 출력하세요.
+    `payments` 내림차순, `amount` 순.
+
+    **사용 테이블:** `payment`
+  solution: |
+    SELECT amount, COUNT(*) AS payments
+    FROM payment
+    GROUP BY amount
+    ORDER BY payments DESC, amount
+    LIMIT 5;
+  note: |
+    결제 금액은 대여료(0.99, 2.99, 4.99)에 연체료가 더해진 값이라 특정 금액에 몰려 있습니다. **최빈값(mode)** 을 구하는 기본 방법입니다.
+
+- id: AGG-020
+  title: 고객당 평균 대여 횟수
+  level: 3
+  tags: [AVG, 파생 테이블, 2단계 집계]
+  question: |
+    매장(`customer.store_id`)별로 고객 1명당 평균 대여 횟수(소수 2자리), 최소, 최대 대여 횟수를 구하세요.
+
+    - 출력: `store_id`, `customers`, `avg_rentals`, `min_rentals`, `max_rentals` — `store_id` 순
+
+    **사용 테이블:** `customer`, `rental`
+  solution: |
+    SELECT c.store_id,
+           COUNT(*) AS customers,
+           ROUND(AVG(t.rentals), 2) AS avg_rentals,
+           MIN(t.rentals) AS min_rentals,
+           MAX(t.rentals) AS max_rentals
+    FROM customer c
+    JOIN (
+        SELECT customer_id, COUNT(*) AS rentals
+        FROM rental
+        GROUP BY customer_id
+    ) t ON t.customer_id = c.customer_id
+    GROUP BY c.store_id
+    ORDER BY c.store_id;
+  note: |
+    "평균의 평균"이 아니라 **고객 단위로 먼저 집계한 뒤** 다시 평균을 내야 "고객당 평균"이 됩니다.
+    `COUNT(r.rental_id) / COUNT(DISTINCT c.customer_id)` 로 한 번에 구할 수도 있지만 MIN/MAX 까지 구하려면 2단계가 필요합니다.
+
+- id: AGG-021
+  title: 도시가 가장 많은 국가
+  level: 1
+  tags: [GROUP BY, JOIN]
+  question: |
+    등록된 도시 수가 가장 많은 국가 5곳의 `country`, `cities` 를 구하세요. `cities` 내림차순, `country` 순.
+
+    **사용 테이블:** `city`, `country`
+  solution: |
+    SELECT co.country, COUNT(*) AS cities
+    FROM city ci
+    JOIN country co ON co.country_id = ci.country_id
+    GROUP BY co.country_id, co.country
+    ORDER BY cities DESC, co.country
+    LIMIT 5;
+  note: |
+    1:N 관계에서 N 쪽(`city`)을 세면 1 쪽(`country`)별 개수가 됩니다.
+
+- id: AGG-022
+  title: 재고 보유 현황
+  level: 2
+  tags: [COUNT DISTINCT, GROUP BY]
+  question: |
+    매장별로 보유한 DVD 장수 `copies`, 영화 종류 수 `titles`, 영화 1편당 평균 장수 `copies_per_title`(소수 2자리)를 구하세요.
+    `store_id` 순.
+
+    **사용 테이블:** `inventory`
+  solution: |
+    SELECT store_id,
+           COUNT(*) AS copies,
+           COUNT(DISTINCT film_id) AS titles,
+           ROUND(COUNT(*) / COUNT(DISTINCT film_id), 2) AS copies_per_title
+    FROM inventory
+    GROUP BY store_id
+    ORDER BY store_id;
+  note: |
+    `inventory` 는 **실물 DVD 1장 = 1행**입니다. "영화 수"와 "재고 수"를 구분하는 것이 Sakila 문제의 핵심입니다.
+
+- id: AGG-023
+  title: 연체료가 포함된 결제
+  level: 3
+  tags: [조인 집계, 비교]
+  question: |
+    결제 금액이 해당 영화의 대여료(`film.rental_rate`)보다 **큰** 결제(=연체료 포함)를 영화 등급별로 집계하세요.
+
+    - 출력: `rating`, `payments`(전체 결제 수), `with_late_fee`(연체료 포함 결제 수), `late_fee_total`(초과 금액 합계)
+    - `rating` 순
+
+    **사용 테이블:** `payment`, `rental`, `inventory`, `film`
+  solution: |
+    SELECT f.rating,
+           COUNT(*) AS payments,
+           SUM(p.amount > f.rental_rate) AS with_late_fee,
+           SUM(GREATEST(p.amount - f.rental_rate, 0)) AS late_fee_total
+    FROM payment p
+    JOIN rental r    ON r.rental_id    = p.rental_id
+    JOIN inventory i ON i.inventory_id = r.inventory_id
+    JOIN film f      ON f.film_id      = i.film_id
+    GROUP BY f.rating
+    ORDER BY f.rating;
+  note: |
+    `GREATEST(x, 0)` 으로 음수(할인 등)를 0으로 막아 초과분만 더했습니다.
+    `payment.rental_id` 가 NULL 인 결제 5건은 INNER JOIN 에서 자연스럽게 빠집니다.
+
+- id: AGG-024
+  title: 첫 대여와 마지막 대여
+  level: 2
+  tags: [MIN, MAX, 날짜 집계]
+  question: |
+    고객 1~10번의 첫 대여일 `first_rental`, 마지막 대여일 `last_rental`, 활동 기간(일) `active_days` 를 구하세요.
+    `customer_id` 순.
+
+    **사용 테이블:** `rental`
+  solution: |
+    SELECT customer_id,
+           MIN(rental_date) AS first_rental,
+           MAX(rental_date) AS last_rental,
+           DATEDIFF(MAX(rental_date), MIN(rental_date)) AS active_days
+    FROM rental
+    WHERE customer_id <= 10
+    GROUP BY customer_id
+    ORDER BY customer_id;
+  note: |
+    `MIN`/`MAX` 는 숫자뿐 아니라 **날짜와 문자열**에도 씁니다. 집계 함수 결과에 다시 함수를 적용할 수 있습니다.
+
+- id: AGG-025
+  title: 표준편차와 분산
+  level: 3
+  tags: [STDDEV, VARIANCE, 통계]
+  question: |
+    장르별 상영 시간의 평균 `avg_len`, 표준편차 `std_len`(모집단), 변동계수 `cv`(표준편차/평균, 소수 3자리)를 구하세요.
+    변동계수 내림차순, `category` 순.
+
+    **사용 테이블:** `category`, `film_category`, `film`
+  solution: |
+    SELECT c.name AS category,
+           ROUND(AVG(f.length), 2)        AS avg_len,
+           ROUND(STDDEV_POP(f.length), 2) AS std_len,
+           ROUND(STDDEV_POP(f.length) / AVG(f.length), 3) AS cv
+    FROM category c
+    JOIN film_category fc ON fc.category_id = c.category_id
+    JOIN film f           ON f.film_id      = fc.film_id
+    GROUP BY c.category_id, c.name
+    ORDER BY cv DESC, category;
+  note: |
+    `STDDEV_POP`(모집단)과 `STDDEV_SAMP`(표본, n-1 로 나눔)은 다릅니다. MySQL 의 `STDDEV`/`STD` 는 **모집단** 표준편차입니다.
+    평균이 다른 집단끼리 흩어짐을 비교할 때는 표준편차보다 **변동계수**가 공정합니다.
+
+- id: AGG-026
+  title: 하루 최대 대여일
+  level: 2
+  tags: [GROUP BY, DATE]
+  question: |
+    대여 건수가 가장 많았던 날짜 5일의 `rental_day`, `rentals` 를 구하세요. `rentals` 내림차순, `rental_day` 순.
+
+    **사용 테이블:** `rental`
+  solution: |
+    SELECT DATE(rental_date) AS rental_day, COUNT(*) AS rentals
+    FROM rental
+    GROUP BY rental_day
+    ORDER BY rentals DESC, rental_day
+    LIMIT 5;
+  note: |
+    `DATETIME` 을 날짜 단위로 묶으려면 `DATE()` 로 시각을 잘라야 합니다. 그대로 GROUP BY 하면 초 단위로 그룹이 나뉩니다.

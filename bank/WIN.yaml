@@ -1,0 +1,687 @@
+# 윈도우 함수: 순위 · 누적 · 이동 평균 · LAG/LEAD · 분포
+- id: WIN-001
+  title: 행 번호 붙이기
+  level: 2
+  tags: [ROW_NUMBER, OVER]
+  question: |
+    가장 긴 영화부터 순서대로 번호를 붙여 상위 10편의 `rn`, `title`, `length` 를 조회하세요.
+    `length` 내림차순, 같으면 `title` 순으로 번호를 매깁니다.
+
+    **사용 테이블:** `film`
+  solution: |
+    SELECT ROW_NUMBER() OVER (ORDER BY length DESC, title) AS rn,
+           title, length
+    FROM film
+    ORDER BY rn
+    LIMIT 10;
+  note: |
+    윈도우 함수는 `함수() OVER (...)` 형태이며, **행을 줄이지 않고** 각 행 옆에 계산 결과를 붙입니다. (GROUP BY 와의 가장 큰 차이)
+    `OVER` 안의 `ORDER BY` 는 번호를 매기는 순서이고, 결과의 출력 순서는 바깥 `ORDER BY` 가 정합니다.
+
+- id: WIN-002
+  title: ROW_NUMBER · RANK · DENSE_RANK 비교
+  level: 2
+  tags: [RANK, DENSE_RANK, ROW_NUMBER]
+  question: |
+    대여료(`rental_rate`)가 높은 순으로 세 가지 순위를 매기고, `film_id` 1~10번 영화만 출력하세요.
+
+    - 출력: `film_id`, `rental_rate`, `row_num`, `rnk`, `dense_rnk` — `film_id` 순
+    - `row_num` 은 동점일 때 `film_id` 순으로 매깁니다.
+
+    **사용 테이블:** `film`
+  solution: |
+    SELECT film_id, rental_rate, row_num, rnk, dense_rnk
+    FROM (
+        SELECT film_id, rental_rate,
+               ROW_NUMBER() OVER (ORDER BY rental_rate DESC, film_id) AS row_num,
+               RANK()       OVER (ORDER BY rental_rate DESC)          AS rnk,
+               DENSE_RANK() OVER (ORDER BY rental_rate DESC)          AS dense_rnk
+        FROM film
+    ) t
+    WHERE film_id <= 10
+    ORDER BY film_id;
+  note: |
+    대여료는 3종(4.99, 2.99, 0.99)뿐이라 차이가 극명합니다.
+    - `ROW_NUMBER`: 동점이어도 1, 2, 3 … 고유 번호
+    - `RANK`: 동점은 같은 순위, 다음 순위는 **건너뜀** (4.99 가 336편이면 2.99 는 337위)
+    - `DENSE_RANK`: 동점은 같은 순위, 다음 순위는 **연속** (2.99 는 2위)
+    순위를 **먼저 전체에 매긴 뒤** 바깥에서 거르는 것이 중요합니다 — WHERE 를 안쪽에 두면 10편 안에서만 순위가 매겨집니다.
+
+- id: WIN-003
+  title: 장르별 영화 순위
+  level: 2
+  tags: [PARTITION BY, ROW_NUMBER]
+  question: |
+    장르별로 상영 시간이 긴 순서대로 번호를 매기고 **각 장르의 상위 2편**을 조회하세요.
+
+    - 출력: `category`, `rn`, `title`, `length` — `category`, `rn` 순
+    - 동점이면 `title` 순
+
+    **사용 테이블:** `film`, `film_category`, `category`
+  solution: |
+    WITH ranked AS (
+        SELECT c.name AS category, f.title, f.length,
+               ROW_NUMBER() OVER (PARTITION BY c.category_id ORDER BY f.length DESC, f.title) AS rn
+        FROM film f
+        JOIN film_category fc ON fc.film_id    = f.film_id
+        JOIN category c       ON c.category_id = fc.category_id
+    )
+    SELECT category, rn, title, length
+    FROM ranked
+    WHERE rn <= 2
+    ORDER BY category, rn;
+  note: |
+    `PARTITION BY` 는 윈도우를 그룹별로 나눕니다. 그룹마다 번호가 1부터 다시 시작합니다.
+    **그룹별 TOP N** 의 가장 일반적인 해법입니다 (SUB-010 의 상관 서브쿼리, SUB-028 의 LATERAL 과 비교해 보세요).
+
+- id: WIN-004
+  title: 공정한 TOP 10 (동점 포함)
+  level: 3
+  tags: [RANK, 동점 처리]
+  question: |
+    대여 횟수 기준 **10위까지의 모든 영화**(동점 포함)를 구하세요. (JOIN-005 의 LIMIT 함정을 해결하는 문제)
+
+    - 출력: `rnk`, `title`, `rental_count` — `rnk`, `title` 순
+
+    **사용 테이블:** `rental`, `inventory`, `film`
+  solution: |
+    SELECT rnk, title, rental_count
+    FROM (
+        SELECT f.title, COUNT(*) AS rental_count,
+               RANK() OVER (ORDER BY COUNT(*) DESC) AS rnk
+        FROM rental r
+        JOIN inventory i ON i.inventory_id = r.inventory_id
+        JOIN film f      ON f.film_id      = i.film_id
+        GROUP BY f.film_id, f.title
+    ) t
+    WHERE rnk <= 10
+    ORDER BY rnk, title;
+  note: |
+    윈도우 함수 안에 **집계 함수**를 쓸 수 있습니다 (`RANK() OVER (ORDER BY COUNT(*) DESC)`). GROUP BY 가 먼저 실행되고 그 결과에 윈도우가 적용됩니다.
+    `LIMIT 10` 은 10행을 자르지만 `RANK() <= 10` 은 10위 동점까지 모두 포함해 **16편**이 나옵니다.
+
+- id: WIN-005
+  title: 전체 대비 비율
+  level: 2
+  tags: [SUM OVER, 비율]
+  question: |
+    등급별 영화 수와 **전체 대비 비율**(%)을 윈도우 함수로 구하세요.
+
+    - 출력: `rating`, `films`, `pct`(소수 1자리) — `rating` 순
+
+    **사용 테이블:** `film`
+  solution: |
+    SELECT rating, COUNT(*) AS films,
+           ROUND(100 * COUNT(*) / SUM(COUNT(*)) OVER (), 1) AS pct
+    FROM film
+    GROUP BY rating
+    ORDER BY rating;
+  note: |
+    `OVER ()` 는 **전체 결과**를 하나의 윈도우로 봅니다. `SUM(COUNT(*)) OVER ()` = 그룹별 개수의 총합.
+    SUB-007 의 스칼라 서브쿼리 방식보다 테이블을 한 번만 읽습니다.
+
+- id: WIN-006
+  title: 그룹 평균과 비교
+  level: 2
+  tags: [AVG OVER, PARTITION BY]
+  question: |
+    `film_id` 1~10번 영화마다 자기 등급의 평균 상영 시간 `rating_avg` 와 차이 `diff` 를 구하세요 (둘 다 소수 1자리).
+
+    - 출력: `film_id`, `title`, `rating`, `length`, `rating_avg`, `diff` — `film_id` 순
+
+    **사용 테이블:** `film`
+  solution: |
+    SELECT film_id, title, rating, length, rating_avg, diff
+    FROM (
+        SELECT film_id, title, rating, length,
+               ROUND(AVG(length) OVER (PARTITION BY rating), 1)          AS rating_avg,
+               ROUND(length - AVG(length) OVER (PARTITION BY rating), 1) AS diff
+        FROM film
+    ) t
+    WHERE film_id <= 10
+    ORDER BY film_id;
+  note: |
+    `PARTITION BY` 만 있고 `ORDER BY` 가 없으면 윈도우는 **그룹 전체**입니다. 각 행 옆에 그룹 평균이 붙습니다.
+    역시 순서가 중요합니다 — `WHERE film_id <= 10` 을 안쪽에 두면 10편끼리의 평균이 됩니다.
+
+- id: WIN-007
+  title: 일별 누적 매출
+  level: 2
+  tags: [누적합, SUM OVER ORDER BY]
+  question: |
+    2005-07-05 ~ 2005-07-12 의 일별 매출과 **누적 매출**을 구하세요.
+
+    - 출력: `day`, `revenue`, `cumulative` — `day` 순
+
+    **사용 테이블:** `payment`
+  solution: |
+    SELECT day, revenue,
+           SUM(revenue) OVER (ORDER BY day) AS cumulative
+    FROM (
+        SELECT DATE(payment_date) AS day, SUM(amount) AS revenue
+        FROM payment
+        WHERE payment_date >= '2005-07-05' AND payment_date < '2005-07-13'
+        GROUP BY day
+    ) t
+    ORDER BY day;
+  note: |
+    윈도우에 `ORDER BY` 를 넣으면 기본 프레임이 **"처음부터 현재 행까지"** (`RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW`)가 되어 누적합이 됩니다.
+    CTE-009 의 재귀 누적합과 비교하면 훨씬 간단합니다.
+
+- id: WIN-008
+  title: 고객별 누적 결제와 결제 순번
+  level: 3
+  tags: [누적합, PARTITION BY, ROWS]
+  question: |
+    고객 1번의 결제마다 결제 순번 `nth`, 누적 결제액 `running_total`, 지금까지의 평균 결제액 `running_avg`(소수 2자리)를 구하세요.
+
+    - 출력: `payment_id`, `payment_date`, `amount`, `nth`, `running_total`, `running_avg` — `payment_date`, `payment_id` 순
+
+    **사용 테이블:** `payment`
+  solution: |
+    SELECT payment_id, payment_date, amount,
+           ROW_NUMBER() OVER w AS nth,
+           SUM(amount)  OVER w AS running_total,
+           ROUND(AVG(amount) OVER w, 2) AS running_avg
+    FROM payment
+    WHERE customer_id = 1
+    WINDOW w AS (ORDER BY payment_date, payment_id ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW)
+    ORDER BY payment_date, payment_id;
+  note: |
+    같은 윈도우를 여러 번 쓸 때는 `WINDOW w AS (...)` 로 이름을 붙여 재사용합니다.
+    `RANGE` 프레임은 정렬 값이 같은 행(동시각)을 **한꺼번에** 포함하고, `ROWS` 는 **물리적 행 단위**로 셉니다. 누적합에서 동점이 있으면 결과가 달라지니 `ROWS` 를 명시하는 습관을 들이세요.
+
+- id: WIN-009
+  title: 7일 이동 평균
+  level: 3
+  tags: [이동 평균, ROWS BETWEEN]
+  question: |
+    2005-07-05 ~ 2005-07-31 의 일별 대여 건수와 **직전 6일 + 당일(7일) 이동 평균**(소수 1자리)을 구하세요.
+    대여가 있는 날만 대상으로 하고, 7일이 다 차지 않은 초반에도 가능한 범위에서 평균을 냅니다.
+
+    - 출력: `day`, `rentals`, `ma7` — `day` 순
+
+    **사용 테이블:** `rental`
+  solution: |
+    SELECT day, rentals,
+           ROUND(AVG(rentals) OVER (ORDER BY day ROWS BETWEEN 6 PRECEDING AND CURRENT ROW), 1) AS ma7
+    FROM (
+        SELECT DATE(rental_date) AS day, COUNT(*) AS rentals
+        FROM rental
+        WHERE rental_date >= '2005-07-05' AND rental_date < '2005-08-01'
+        GROUP BY day
+    ) t
+    ORDER BY day;
+  note: |
+    `ROWS BETWEEN 6 PRECEDING AND CURRENT ROW` 는 "현재 행과 앞의 6개 행" 입니다. **날짜가 아니라 행 기준**이라
+    빠진 날짜가 있으면 7일보다 긴 기간을 평균내게 됩니다. 날짜 기준이 필요하면 CTE-005 처럼 달력을 먼저 채우거나
+    `RANGE BETWEEN INTERVAL 6 DAY PRECEDING AND CURRENT ROW` 를 사용하세요.
+
+- id: WIN-010
+  title: 직전 대여와의 간격 (LAG)
+  level: 2
+  tags: [LAG, 이전 행]
+  question: |
+    고객 1번의 대여마다 직전 대여일과 간격(일)을 `LAG` 로 구하세요. (SUB-030 과 같은 문제)
+
+    - 출력: `rental_id`, `rental_date`, `prev_rental_date`, `gap_days` — `rental_date`, `rental_id` 순
+
+    **사용 테이블:** `rental`
+  solution: |
+    SELECT rental_id, rental_date,
+           LAG(rental_date) OVER w AS prev_rental_date,
+           DATEDIFF(rental_date, LAG(rental_date) OVER w) AS gap_days
+    FROM rental
+    WHERE customer_id = 1
+    WINDOW w AS (ORDER BY rental_date, rental_id)
+    ORDER BY rental_date, rental_id;
+  note: |
+    `LAG(컬럼, n, 기본값)` 은 n행 앞(기본 1), `LEAD` 는 n행 뒤의 값을 가져옵니다. 첫 행의 LAG 는 기본값(생략 시 NULL)입니다.
+    SUB-030 의 상관 서브쿼리 풀이와 결과는 같지만, 동시각 대여가 있으면 정렬 기준에 따라 미세하게 다를 수 있습니다.
+
+- id: WIN-011
+  title: 전월 대비 매출 증감률
+  level: 3
+  tags: [LAG, 증감률]
+  question: |
+    월별 매출과 전월 매출, 증감률(%)을 구하세요. 데이터가 있는 달만 대상입니다.
+
+    - 출력: `month`(YYYY-MM), `revenue`, `prev_revenue`, `mom_pct`(소수 1자리) — `month` 순
+
+    **사용 테이블:** `payment`
+  solution: |
+    SELECT month, revenue,
+           LAG(revenue) OVER (ORDER BY month) AS prev_revenue,
+           ROUND(100 * (revenue / LAG(revenue) OVER (ORDER BY month) - 1), 1) AS mom_pct
+    FROM (
+        SELECT DATE_FORMAT(payment_date, '%Y-%m') AS month, SUM(amount) AS revenue
+        FROM payment
+        GROUP BY month
+    ) t
+    ORDER BY month;
+  note: |
+    ⚠️ 2006-02 의 "전월" 은 LAG 기준으로 **2005-08** 입니다. 실제 전월(2006-01)은 데이터가 없는데 LAG 는 단순히 "직전 행"을 가져오기 때문입니다.
+    빈 달이 있을 수 있는 시계열에서는 CTE-006 처럼 월 달력을 먼저 채우거나 SUB-032 처럼 날짜 연산으로 전월을 찾으세요.
+
+- id: WIN-012
+  title: 다음 대여까지 걸린 시간 (LEAD)
+  level: 3
+  tags: [LEAD, 재방문 간격]
+  question: |
+    고객별로 대여 후 **다음 대여까지 걸린 시간(일)** 의 평균을 구하고, 평균 간격이 가장 짧은 고객 5명을 출력하세요.
+
+    - 출력: `customer_id`, `rentals`, `avg_next_gap`(소수 2자리) — `avg_next_gap`, `customer_id` 순
+
+    **사용 테이블:** `rental`
+  solution: |
+    SELECT customer_id, COUNT(*) AS rentals,
+           ROUND(AVG(TIMESTAMPDIFF(MINUTE, rental_date, next_date)) / 1440, 2) AS avg_next_gap
+    FROM (
+        SELECT customer_id, rental_date,
+               LEAD(rental_date) OVER (PARTITION BY customer_id ORDER BY rental_date, rental_id) AS next_date
+        FROM rental
+    ) t
+    GROUP BY customer_id
+    ORDER BY avg_next_gap, customer_id
+    LIMIT 5;
+  note: |
+    마지막 대여는 `next_date` 가 NULL 이라 `AVG` 에서 자동 제외됩니다. 그래서 `rentals`(전체 횟수)와 평균에 쓰인 개수는 1 차이 납니다.
+    `DATEDIFF` 대신 분 단위 `TIMESTAMPDIFF` 를 써서 같은 날 재방문도 0이 아닌 시간으로 반영했습니다.
+
+- id: WIN-013
+  title: 첫 값과 마지막 값
+  level: 3
+  tags: [FIRST_VALUE, LAST_VALUE, 프레임]
+  question: |
+    고객 1~5번 각각의 **첫 대여 영화**와 **마지막 대여 영화** 제목을 구하세요.
+
+    - 출력: `customer_id`, `first_title`, `last_title` — `customer_id` 순
+    - 같은 시각이면 `rental_id` 가 작은 것이 먼저
+
+    **사용 테이블:** `rental`, `inventory`, `film`
+  solution: |
+    SELECT DISTINCT customer_id,
+           FIRST_VALUE(title) OVER w AS first_title,
+           LAST_VALUE(title)  OVER w AS last_title
+    FROM (
+        SELECT r.customer_id, r.rental_date, r.rental_id, f.title
+        FROM rental r
+        JOIN inventory i ON i.inventory_id = r.inventory_id
+        JOIN film f      ON f.film_id      = i.film_id
+        WHERE r.customer_id <= 5
+    ) t
+    WINDOW w AS (PARTITION BY customer_id ORDER BY rental_date, rental_id
+                 ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING)
+    ORDER BY customer_id;
+  note: |
+    ⚠️ `LAST_VALUE` 의 가장 흔한 실수: 기본 프레임이 "처음 ~ **현재 행**" 이라 프레임을 지정하지 않으면 **항상 현재 행 자신**을 돌려줍니다.
+    `ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING` 으로 파티션 전체를 프레임으로 잡아야 진짜 마지막 값이 나옵니다.
+
+- id: WIN-014
+  title: N번째 값
+  level: 3
+  tags: [NTH_VALUE]
+  question: |
+    장르별로 대여료 × 상영 시간(`rental_rate * length`)이 **두 번째로 큰** 영화의 제목을 구하세요. 동점이면 `title` 순.
+
+    - 출력: `category`, `second_title` — `category` 순
+
+    **사용 테이블:** `film`, `film_category`, `category`
+  solution: |
+    SELECT DISTINCT c.name AS category,
+           NTH_VALUE(f.title, 2) OVER (
+               PARTITION BY c.category_id
+               ORDER BY f.rental_rate * f.length DESC, f.title
+               ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING
+           ) AS second_title
+    FROM film f
+    JOIN film_category fc ON fc.film_id    = f.film_id
+    JOIN category c       ON c.category_id = fc.category_id
+    ORDER BY category;
+  note: |
+    `NTH_VALUE(컬럼, n)` 은 프레임 안의 n번째 값입니다. 역시 프레임을 전체로 잡지 않으면 앞쪽 행들에서 NULL 이 나옵니다.
+    `ROW_NUMBER() ... WHERE rn = 2` 로도 같은 결과를 얻을 수 있습니다.
+
+- id: WIN-015
+  title: 4분위 그룹 나누기
+  level: 3
+  tags: [NTILE, 분위수]
+  question: |
+    고객을 결제 합계 기준으로 **4개 그룹(NTILE)** 으로 나누고, 그룹별 고객 수·최소·최대·평균 합계를 구하세요.
+
+    - 출력: `quartile`(1 = 상위), `customers`, `min_total`, `max_total`, `avg_total`(소수 2자리) — `quartile` 순
+
+    **사용 테이블:** `payment`
+  solution: |
+    SELECT quartile, COUNT(*) AS customers,
+           MIN(total) AS min_total, MAX(total) AS max_total, ROUND(AVG(total), 2) AS avg_total
+    FROM (
+        SELECT customer_id, SUM(amount) AS total,
+               NTILE(4) OVER (ORDER BY SUM(amount) DESC, customer_id) AS quartile
+        FROM payment
+        GROUP BY customer_id
+    ) t
+    GROUP BY quartile
+    ORDER BY quartile;
+  note: |
+    `NTILE(n)` 은 정렬된 행을 **개수 기준으로** n등분합니다. 599명 / 4 = 149.75 이므로 앞 그룹부터 150, 150, 150, 149 명이 됩니다.
+    값 기준이 아니라 개수 기준이라 경계값의 동점 고객이 서로 다른 그룹에 들어갈 수 있습니다.
+
+- id: WIN-016
+  title: 백분위 순위
+  level: 3
+  tags: [PERCENT_RANK, CUME_DIST]
+  question: |
+    상영 시간 기준 `PERCENT_RANK` 와 `CUME_DIST` 를 구하고, 상영 시간이 정확히 **60, 90, 120, 150, 180분**인 영화의 값만 중복 없이 출력하세요.
+
+    - 출력: `length`, `pct_rank`, `cum_dist` (둘 다 소수 4자리) — `length` 순
+
+    **사용 테이블:** `film`
+  solution: |
+    SELECT DISTINCT length, pct_rank, cum_dist
+    FROM (
+        SELECT length,
+               ROUND(PERCENT_RANK() OVER (ORDER BY length), 4) AS pct_rank,
+               ROUND(CUME_DIST()    OVER (ORDER BY length), 4) AS cum_dist
+        FROM film
+    ) t
+    WHERE length IN (60, 90, 120, 150, 180)
+    ORDER BY length;
+  note: |
+    - `PERCENT_RANK` = (RANK − 1) / (전체 행 − 1): 나보다 **작은** 값의 비율 (0 ~ 1)
+    - `CUME_DIST` = (나 이하인 행 수) / 전체 행: 나 **이하** 값의 비율 (0 초과 ~ 1)
+    "120분 영화는 하위 몇 %인가?" 같은 질문에 답할 때 씁니다.
+    별칭을 `cume_dist` 로 지으면 문법 오류가 납니다 — MySQL 8.0 에서 윈도우 함수 이름은 **예약어**입니다. (`rank`, `row_number` 등도 마찬가지)
+
+- id: WIN-017
+  title: 중앙값 (윈도우 함수)
+  level: 4
+  tags: [중앙값, ROW_NUMBER, COUNT OVER]
+  question: |
+    장르별 상영 시간의 **중앙값**을 구하세요. (SUB-023 의 서브쿼리 풀이와 비교)
+
+    - 출력: `category`, `films`, `median_length` — `category` 순
+
+    **사용 테이블:** `film`, `film_category`, `category`
+  solution: |
+    SELECT category, MAX(cnt) AS films, AVG(length) AS median_length
+    FROM (
+        SELECT c.name AS category, f.length,
+               ROW_NUMBER() OVER (PARTITION BY c.category_id ORDER BY f.length, f.film_id) AS rn,
+               COUNT(*)     OVER (PARTITION BY c.category_id) AS cnt
+        FROM film f
+        JOIN film_category fc ON fc.film_id    = f.film_id
+        JOIN category c       ON c.category_id = fc.category_id
+    ) t
+    WHERE rn IN (FLOOR((cnt + 1) / 2), CEIL((cnt + 1) / 2))
+    GROUP BY category
+    ORDER BY category;
+  note: |
+    행 번호와 그룹 크기를 함께 구한 뒤, 가운데 행(홀수면 1개, 짝수면 2개)만 남겨 평균을 냅니다.
+    cnt = 74 면 rn 37, 38 의 평균, cnt = 51 이면 rn 26 하나입니다. 그룹별 중앙값도 한 번에 구할 수 있습니다.
+
+- id: WIN-018
+  title: 매장별 매출 점유율 추이
+  level: 3
+  tags: [PARTITION BY, 점유율]
+  question: |
+    월별로 각 매장(`staff.store_id`)의 매출과 **그 달 전체 매출 중 점유율**(%)을 구하세요.
+
+    - 출력: `month`(YYYY-MM), `store_id`, `revenue`, `share_pct`(소수 1자리) — `month`, `store_id` 순
+
+    **사용 테이블:** `payment`, `staff`
+  solution: |
+    SELECT month, store_id, revenue,
+           ROUND(100 * revenue / SUM(revenue) OVER (PARTITION BY month), 1) AS share_pct
+    FROM (
+        SELECT DATE_FORMAT(p.payment_date, '%Y-%m') AS month, s.store_id, SUM(p.amount) AS revenue
+        FROM payment p
+        JOIN staff s ON s.staff_id = p.staff_id
+        GROUP BY month, s.store_id
+    ) t
+    ORDER BY month, store_id;
+  note: |
+    `SUM() OVER (PARTITION BY month)` 로 "같은 달의 합계" 를 각 행 옆에 붙이면 점유율 계산이 한 줄로 끝납니다.
+
+- id: WIN-019
+  title: 처음으로 누적 50% 를 넘는 장르 (파레토)
+  level: 4
+  tags: [누적 비율, 파레토]
+  question: |
+    장르를 매출 내림차순으로 정렬했을 때 누적 매출 비율을 구하고, **누적 비율이 50% 에 도달하기까지 필요한 장르**를 모두 출력하세요.
+    (50% 를 처음 넘기는 장르까지 포함)
+
+    - 출력: `category`, `revenue`, `cum_pct`(소수 1자리) — 매출 내림차순, `category` 순
+
+    **사용 테이블:** `payment`, `rental`, `inventory`, `film_category`, `category`
+  solution: |
+    WITH cat_rev AS (
+        SELECT c.name AS category, SUM(p.amount) AS revenue
+        FROM payment p
+        JOIN rental r         ON r.rental_id    = p.rental_id
+        JOIN inventory i      ON i.inventory_id = r.inventory_id
+        JOIN film_category fc ON fc.film_id     = i.film_id
+        JOIN category c       ON c.category_id  = fc.category_id
+        GROUP BY c.name
+    ), cum AS (
+        SELECT category, revenue,
+               SUM(revenue) OVER (ORDER BY revenue DESC, category ROWS UNBOUNDED PRECEDING)
+                 / SUM(revenue) OVER () AS cum_ratio,
+               SUM(revenue) OVER (ORDER BY revenue DESC, category ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING)
+                 / SUM(revenue) OVER () AS prev_ratio
+        FROM cat_rev
+    )
+    SELECT category, revenue, ROUND(100 * cum_ratio, 1) AS cum_pct
+    FROM cum
+    WHERE COALESCE(prev_ratio, 0) < 0.5
+    ORDER BY revenue DESC, category;
+  note: |
+    "누적 비율 < 50%" 로 거르면 50% 를 **넘기는 장르**가 빠집니다. 그래서 "**직전까지의** 누적 비율 < 50%" 로 조건을 바꿨습니다.
+    `ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING` 은 현재 행을 제외한 누적이며, 첫 행에서는 NULL 입니다.
+    장르 16개 중 절반 매출을 내는 데 몇 개가 필요한지 보면 매출이 얼마나 고르게 퍼져 있는지 알 수 있습니다.
+
+- id: WIN-020
+  title: 연속 증가 구간 찾기
+  level: 4
+  tags: [LAG, 플래그, 누적합 그룹]
+  question: |
+    2005-07-05 ~ 2005-07-31 의 일별 대여 건수에서 **전날보다 증가한 날**을 표시하고, 증가가 연속된 구간의 길이를 구하세요.
+    (대여가 있는 날만 대상, "전날" 은 직전 데이터 행)
+
+    - 출력: `day`, `rentals`, `is_up`(1/0), `up_streak`(현재까지 연속 증가 일수, 증가가 아니면 0) — `day` 순
+
+    **사용 테이블:** `rental`
+  solution: |
+    WITH d AS (
+        SELECT DATE(rental_date) AS day, COUNT(*) AS rentals
+        FROM rental
+        WHERE rental_date >= '2005-07-05' AND rental_date < '2005-08-01'
+        GROUP BY day
+    ), f AS (
+        SELECT day, rentals,
+               COALESCE(rentals > LAG(rentals) OVER (ORDER BY day), 0) AS is_up
+        FROM d
+    ), g AS (
+        SELECT *, SUM(is_up = 0) OVER (ORDER BY day ROWS UNBOUNDED PRECEDING) AS grp
+        FROM f
+    )
+    SELECT day, rentals, is_up,
+           CASE WHEN is_up = 1
+                THEN SUM(is_up) OVER (PARTITION BY grp ORDER BY day ROWS UNBOUNDED PRECEDING)
+                ELSE 0 END AS up_streak
+    FROM g
+    ORDER BY day;
+  note: |
+    "증가가 끊길 때마다 그룹 번호를 1씩 올리는" 기법입니다: `SUM(끊김 플래그) OVER (ORDER BY ...)`.
+    같은 그룹 안에서 다시 누적하면 연속 길이가 됩니다. 스트릭(연속 출석, 연속 상승) 계산의 정석입니다.
+
+- id: WIN-021
+  title: 고객의 N번째 대여 장르
+  level: 3
+  tags: [ROW_NUMBER, 첫 구매 분석]
+  question: |
+    모든 고객의 **첫 번째 대여** 영화 장르를 집계해, 첫 대여 장르별 고객 수를 구하세요.
+
+    - 출력: `first_category`, `customers` — `customers` 내림차순, `first_category` 순
+    - 같은 시각이면 `rental_id` 가 작은 것이 첫 대여
+
+    **사용 테이블:** `rental`, `inventory`, `film_category`, `category`
+  solution: |
+    WITH ordered AS (
+        SELECT r.customer_id, c.name AS category,
+               ROW_NUMBER() OVER (PARTITION BY r.customer_id ORDER BY r.rental_date, r.rental_id) AS nth
+        FROM rental r
+        JOIN inventory i      ON i.inventory_id = r.inventory_id
+        JOIN film_category fc ON fc.film_id     = i.film_id
+        JOIN category c       ON c.category_id  = fc.category_id
+    )
+    SELECT category AS first_category, COUNT(*) AS customers
+    FROM ordered
+    WHERE nth = 1
+    GROUP BY category
+    ORDER BY customers DESC, first_category;
+  note: |
+    "첫 구매 상품" 은 고객 획득 분석의 핵심 질문입니다. `nth = 2` 로 바꾸면 두 번째 대여 장르, 첫 장르와 두 번째 장르를 함께 보면 **전이 행렬**이 됩니다.
+
+- id: WIN-022
+  title: 매장별 일 매출 순위 변동
+  level: 4
+  tags: [RANK, LAG, 순위 변동]
+  question: |
+    2005-08-16 ~ 2005-08-23 의 날짜별로 **장르 매출 순위**를 매기고, 전날 대비 순위 변동을 구하세요. `Sports`, `Animation`, `Drama` 장르만 출력합니다.
+
+    - 출력: `day`, `category`, `revenue`, `rnk`, `rank_change`(전날 순위 − 오늘 순위, 첫날은 NULL) — `category`, `day` 순
+
+    **사용 테이블:** `payment`, `rental`, `inventory`, `film_category`, `category`
+  solution: |
+    WITH daily AS (
+        SELECT DATE(p.payment_date) AS day, c.name AS category, SUM(p.amount) AS revenue
+        FROM payment p
+        JOIN rental r         ON r.rental_id    = p.rental_id
+        JOIN inventory i      ON i.inventory_id = r.inventory_id
+        JOIN film_category fc ON fc.film_id     = i.film_id
+        JOIN category c       ON c.category_id  = fc.category_id
+        WHERE p.payment_date >= '2005-08-16' AND p.payment_date < '2005-08-24'
+        GROUP BY day, c.name
+    ), ranked AS (
+        SELECT *, RANK() OVER (PARTITION BY day ORDER BY revenue DESC) AS rnk
+        FROM daily
+    ), moved AS (
+        SELECT *, CAST(LAG(rnk) OVER (PARTITION BY category ORDER BY day) AS SIGNED) - CAST(rnk AS SIGNED) AS rank_change
+        FROM ranked
+    )
+    SELECT day, category, revenue, rnk, rank_change
+    FROM moved
+    WHERE category IN ('Sports', 'Animation', 'Drama')
+    ORDER BY category, day;
+  note: |
+    윈도우를 **두 번 다른 방향**으로 씁니다: 순위는 날짜별(`PARTITION BY day`), 변동은 장르별(`PARTITION BY category`).
+    필터(`WHERE category IN ...`)는 순위 계산 **후에** 해야 16개 장르 전체 기준 순위가 유지됩니다.
+    ⚠️ `RANK()` 는 **BIGINT UNSIGNED** 를 돌려줍니다. 순위가 떨어지면(3 − 5) 음수가 되어 `out of range` 오류가 나므로 `CAST(... AS SIGNED)` 가 필요합니다.
+
+- id: WIN-023
+  title: 이전 최고 기록 갱신
+  level: 4
+  tags: [MAX OVER, 신기록]
+  question: |
+    2005년 7월 일별 대여 건수에서 **그때까지의 최고 기록을 갱신한 날**만 출력하세요.
+
+    - 출력: `day`, `rentals`, `prev_best`(그 전날까지의 최고, 첫날은 NULL) — `day` 순
+
+    **사용 테이블:** `rental`
+  solution: |
+    WITH d AS (
+        SELECT DATE(rental_date) AS day, COUNT(*) AS rentals
+        FROM rental
+        WHERE rental_date >= '2005-07-01' AND rental_date < '2005-08-01'
+        GROUP BY day
+    ), m AS (
+        SELECT day, rentals,
+               MAX(rentals) OVER (ORDER BY day ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING) AS prev_best
+        FROM d
+    )
+    SELECT day, rentals, prev_best
+    FROM m
+    WHERE prev_best IS NULL OR rentals > prev_best
+    ORDER BY day;
+  note: |
+    "현재 행을 제외한 누적 최댓값" 과 비교하면 **신기록 여부**를 판정할 수 있습니다. 주가 신고가, 최고 매출일 분석에 씁니다.
+
+- id: WIN-024
+  title: 배우 출연작의 개봉 순서별 등급
+  level: 2
+  tags: [ROW_NUMBER, PARTITION BY, 다중 정렬]
+  question: |
+    `actor_id` 1~3번 배우마다 출연작을 제목 순으로 번호 매겨 **처음 3편**의 `actor_id`, `nth`, `title`, `rating` 을 구하세요.
+    `actor_id`, `nth` 순.
+
+    **사용 테이블:** `film_actor`, `film`
+  solution: |
+    SELECT actor_id, nth, title, rating
+    FROM (
+        SELECT fa.actor_id, f.title, f.rating,
+               ROW_NUMBER() OVER (PARTITION BY fa.actor_id ORDER BY f.title) AS nth
+        FROM film_actor fa
+        JOIN film f ON f.film_id = fa.film_id
+        WHERE fa.actor_id <= 3
+    ) t
+    WHERE nth <= 3
+    ORDER BY actor_id, nth;
+  note: |
+    여기서는 안쪽 `WHERE fa.actor_id <= 3` 이 결과를 바꾸지 않습니다 — 파티션(배우) 단위로 통째로 거르기 때문입니다.
+    **파티션 키로 거르는 필터는 안쪽에 둬도 안전하고 더 빠릅니다.** 반면 파티션 내부 행을 거르는 필터는 순위를 바꿉니다.
+
+- id: WIN-025
+  title: 결제 금액 이상치 탐지
+  level: 4
+  tags: [AVG OVER, STDDEV OVER, Z-점수]
+  question: |
+    고객별 결제 금액의 평균과 표준편차로 **Z-점수**를 계산하고, Z-점수가 3 이상인 결제(이상치)를 찾으세요.
+
+    - 출력: `payment_id`, `customer_id`, `amount`, `cust_avg`, `z`(소수 2자리) — `z` 내림차순, `payment_id` 순
+
+    **사용 테이블:** `payment`
+  solution: |
+    SELECT payment_id, customer_id, amount, cust_avg, z
+    FROM (
+        SELECT payment_id, customer_id, amount,
+               ROUND(AVG(amount) OVER (PARTITION BY customer_id), 2) AS cust_avg,
+               ROUND((amount - AVG(amount) OVER (PARTITION BY customer_id))
+                     / NULLIF(STDDEV_POP(amount) OVER (PARTITION BY customer_id), 0), 2) AS z
+        FROM payment
+    ) t
+    WHERE z >= 3
+    ORDER BY z DESC, payment_id;
+  note: |
+    Z-점수 = (값 − 평균) / 표준편차. **각 고객의 평소 패턴 대비** 비정상적으로 큰 결제를 찾는 이상 거래 탐지의 기초입니다.
+    표준편차가 0(모든 결제가 같은 금액)인 고객은 `NULLIF` 로 0 나눗셈을 막았습니다.
+
+- id: WIN-026
+  title: 대여 간격 분포 (LAG + 구간화)
+  level: 3
+  tags: [LAG, 구간화, 분포]
+  question: |
+    모든 고객의 연속된 두 대여 사이 간격(일, `DATEDIFF`)을 구하고 구간별 건수를 집계하세요.
+
+    - 구간: `당일`(0), `1~3일`, `4~7일`, `8~30일`, `31일+`
+    - 출력: `gap_bucket`, `cnt` — 위 순서대로
+
+    **사용 테이블:** `rental`
+  solution: |
+    SELECT CASE WHEN gap = 0 THEN '당일'
+                WHEN gap <= 3 THEN '1~3일'
+                WHEN gap <= 7 THEN '4~7일'
+                WHEN gap <= 30 THEN '8~30일'
+                ELSE '31일+' END AS gap_bucket,
+           COUNT(*) AS cnt
+    FROM (
+        SELECT DATEDIFF(rental_date,
+                        LAG(rental_date) OVER (PARTITION BY customer_id ORDER BY rental_date, rental_id)) AS gap
+        FROM rental
+    ) t
+    WHERE gap IS NOT NULL
+    GROUP BY gap_bucket
+    ORDER BY FIELD(gap_bucket, '당일', '1~3일', '4~7일', '8~30일', '31일+');
+  note: |
+    각 고객의 첫 대여는 이전 값이 없어 NULL 이므로 제외했습니다. 재방문 주기 분포는 리마인드 메시지 발송 시점을 정하는 근거가 됩니다.
+    Sakila 는 데이터가 몇 개의 기간에 몰려 있어 `8~30일`, `31일+` 구간이 "빈 기간을 건너뛴 간격" 을 반영한다는 점도 함께 해석하세요.

@@ -1,0 +1,587 @@
+# 조인: INNER · LEFT · SELF · 다중 조인 · 안티 조인
+- id: JOIN-001
+  title: 영화와 언어
+  level: 1
+  tags: [INNER JOIN]
+  question: |
+    `film_id` 1~5번 영화의 `title` 과 언어 이름 `language` 를 조회하세요. `film_id` 순.
+
+    **사용 테이블:** `film`, `language`
+  solution: |
+    SELECT f.film_id, f.title, l.name AS language
+    FROM film f
+    JOIN language l ON l.language_id = f.language_id
+    WHERE f.film_id <= 5
+    ORDER BY f.film_id;
+  note: |
+    `JOIN` 은 `INNER JOIN` 의 줄임말입니다. 두 테이블에서 **조건이 맞는 행끼리만** 결합합니다.
+    테이블 별칭(`f`, `l`)을 쓰면 쿼리가 짧아지고, 같은 이름의 컬럼을 구분할 수 있습니다.
+
+- id: JOIN-002
+  title: 고객 주소 조회
+  level: 1
+  tags: [INNER JOIN, 다중 조인]
+  question: |
+    고객 1~5번의 `customer_id`, 이름 `name`(이름 성), `address`, `city`, `country` 를 조회하세요. `customer_id` 순.
+
+    **사용 테이블:** `customer`, `address`, `city`, `country`
+  solution: |
+    SELECT c.customer_id,
+           CONCAT(c.first_name, ' ', c.last_name) AS name,
+           a.address, ci.city, co.country
+    FROM customer c
+    JOIN address a  ON a.address_id  = c.address_id
+    JOIN city ci    ON ci.city_id    = a.city_id
+    JOIN country co ON co.country_id = ci.country_id
+    WHERE c.customer_id <= 5
+    ORDER BY c.customer_id;
+  note: |
+    조인은 사슬처럼 이어집니다. 각 `ON` 조건이 **FK → PK** 관계를 따라가는지 확인하면 잘못된 조인을 막을 수 있습니다.
+
+- id: JOIN-003
+  title: 영화별 출연 배우
+  level: 1
+  tags: [N:M 관계, 연결 테이블]
+  question: |
+    영화 `ACADEMY DINOSAUR` 에 출연한 배우의 `first_name`, `last_name` 을 `last_name`, `first_name` 순으로 조회하세요.
+
+    **사용 테이블:** `film`, `film_actor`, `actor`
+  solution: |
+    SELECT a.first_name, a.last_name
+    FROM film f
+    JOIN film_actor fa ON fa.film_id  = f.film_id
+    JOIN actor a       ON a.actor_id  = fa.actor_id
+    WHERE f.title = 'ACADEMY DINOSAUR'
+    ORDER BY a.last_name, a.first_name;
+  note: |
+    영화와 배우는 **다대다(N:M)** 관계라서 `film_actor` 연결 테이블을 거쳐야 합니다.
+
+- id: JOIN-004
+  title: 대여 상세 내역
+  level: 2
+  tags: [다중 조인]
+  question: |
+    고객 `MARY SMITH` 의 대여 내역을 최근 순으로 5건 조회하세요.
+
+    - 출력: `rental_date`, `title`, `store_id`(재고가 있는 매장), `return_date`
+    - `rental_date` 내림차순
+
+    **사용 테이블:** `customer`, `rental`, `inventory`, `film`
+  solution: |
+    SELECT r.rental_date, f.title, i.store_id, r.return_date
+    FROM customer c
+    JOIN rental r    ON r.customer_id  = c.customer_id
+    JOIN inventory i ON i.inventory_id = r.inventory_id
+    JOIN film f      ON f.film_id      = i.film_id
+    WHERE c.first_name = 'MARY' AND c.last_name = 'SMITH'
+    ORDER BY r.rental_date DESC
+    LIMIT 5;
+  note: |
+    대여는 영화가 아니라 **재고(DVD 1장)** 를 가리킵니다. `rental → inventory → film` 경로는 Sakila 에서 가장 많이 쓰는 조인입니다.
+
+- id: JOIN-005
+  title: 가장 많이 대여된 영화 TOP 10
+  level: 2
+  tags: [다중 조인, GROUP BY, LIMIT 함정]
+  question: |
+    전체 기간 동안 대여 횟수가 가장 많은 영화 10편을 구하세요.
+
+    - 출력: `title`, `rating`, `rental_count`
+    - 대여 횟수 내림차순, 같으면 제목 오름차순
+
+    **사용 테이블:** `rental`, `inventory`, `film`
+  solution: |
+    SELECT f.title,
+           f.rating,
+           COUNT(r.rental_id) AS rental_count
+    FROM rental r
+    JOIN inventory i ON i.inventory_id = r.inventory_id
+    JOIN film f      ON f.film_id      = i.film_id
+    GROUP BY f.film_id, f.title, f.rating
+    ORDER BY rental_count DESC, f.title
+    LIMIT 10;
+  note: |
+    - 1위는 **BUCKET BROTHERHOOD(34회)**, 2위 ROCKETEER MOTHER(33회)입니다.
+    - ⚠️ 8~10위는 모두 31회인데, 실제로 **31회 이상 대여된 영화는 16편**입니다. 31회인 영화 일부는 제목 순서 때문에 잘려 나갔습니다.
+    - "상위 10위까지"를 공정하게 뽑으려면 `RANK() OVER (ORDER BY COUNT(*) DESC)` 로 순위를 매긴 뒤 `rnk <= 10` 으로 거르세요. (WIN 유형 참고)
+
+- id: JOIN-006
+  title: 재고가 없는 영화
+  level: 2
+  tags: [LEFT JOIN, 안티 조인, IS NULL]
+  question: |
+    `film` 에는 등록되어 있지만 **어느 매장에도 재고가 없는** 영화의 `film_id`, `title` 을 `film_id` 순으로 조회하세요.
+
+    **사용 테이블:** `film`, `inventory`
+  solution: |
+    SELECT f.film_id, f.title
+    FROM film f
+    LEFT JOIN inventory i ON i.film_id = f.film_id
+    WHERE i.inventory_id IS NULL
+    ORDER BY f.film_id;
+  note: |
+    - **안티 조인**: "B 에 없는 A". `LEFT JOIN ... WHERE B.pk IS NULL` 또는 `NOT EXISTS` 로 씁니다.
+    - `IS NULL` 검사는 반드시 **NOT NULL 컬럼(보통 PK)** 에 해야 "매칭 실패"와 "원래 NULL"을 구분할 수 있습니다.
+    - 결과: 1,000편 중 **42편**은 재고가 없습니다. 반면 재고가 있는 958편은 **모두 한 번 이상 대여**되었습니다.
+      DVD 단위로 보면 미대여 재고가 딱 1장(`inventory_id = 5`) 있습니다 — "영화 단위"냐 "재고 단위"냐에 따라 답이 달라집니다.
+
+- id: JOIN-007
+  title: 영화가 없는 장르까지 포함
+  level: 2
+  tags: [LEFT JOIN, COUNT 함정]
+  question: |
+    모든 언어(`language`)별 영화 수를 구하세요. 영화가 없는 언어도 **0** 으로 표시되어야 합니다.
+
+    - 출력: `language`, `films` — `films` 내림차순, `language` 순
+
+    **사용 테이블:** `language`, `film`
+  solution: |
+    SELECT l.name AS language, COUNT(f.film_id) AS films
+    FROM language l
+    LEFT JOIN film f ON f.language_id = l.language_id
+    GROUP BY l.language_id, l.name
+    ORDER BY films DESC, language;
+  note: |
+    LEFT JOIN 후 `COUNT(*)` 를 쓰면 매칭이 없는 언어도 **1** 로 셉니다 (NULL 로 채워진 행이 1개 있으므로).
+    반드시 오른쪽 테이블의 컬럼으로 `COUNT(f.film_id)` 를 해야 0이 나옵니다. Sakila 의 영화는 모두 English 입니다.
+
+- id: JOIN-008
+  title: LEFT JOIN 조건 위치의 함정
+  level: 3
+  tags: [LEFT JOIN, ON vs WHERE]
+  question: |
+    모든 고객(599명)에 대해 **2005년 5월** 대여 건수를 구하세요. 5월에 대여하지 않은 고객도 0으로 포함해야 합니다.
+
+    - 출력: `customer_id`, `may_rentals` — `customer_id` 순
+
+    **사용 테이블:** `customer`, `rental`
+  solution: |
+    SELECT c.customer_id, COUNT(r.rental_id) AS may_rentals
+    FROM customer c
+    LEFT JOIN rental r
+           ON r.customer_id = c.customer_id
+          AND r.rental_date >= '2005-05-01'
+          AND r.rental_date <  '2005-06-01'
+    GROUP BY c.customer_id
+    ORDER BY c.customer_id;
+  note: |
+    날짜 조건을 `WHERE` 에 두면 매칭되지 않은 고객(r.* 가 NULL)이 걸러져 **INNER JOIN 처럼** 동작합니다.
+    LEFT JOIN 에서 **오른쪽 테이블의 필터 조건은 ON 절에** 두어야 왼쪽 행이 보존됩니다. 결과는 599행이어야 합니다.
+
+- id: JOIN-009
+  title: 같은 도시에 사는 고객 쌍
+  level: 3
+  tags: [SELF JOIN]
+  question: |
+    같은 도시(`city_id`)에 사는 **서로 다른 고객 쌍**을 찾으세요. 같은 쌍이 두 번 나오면 안 됩니다.
+
+    - 출력: `city`, `customer_a`, `customer_b`(각각 customer_id, a < b) — `city`, `customer_a`, `customer_b` 순
+
+    **사용 테이블:** `customer`, `address`, `city`
+  solution: |
+    SELECT ci.city, c1.customer_id AS customer_a, c2.customer_id AS customer_b
+    FROM customer c1
+    JOIN address a1 ON a1.address_id = c1.address_id
+    JOIN address a2 ON a2.city_id    = a1.city_id
+    JOIN customer c2 ON c2.address_id = a2.address_id
+    JOIN city ci     ON ci.city_id    = a1.city_id
+    WHERE c1.customer_id < c2.customer_id
+    ORDER BY ci.city, customer_a, customer_b;
+  note: |
+    **셀프 조인**은 같은 테이블을 다른 별칭으로 두 번 사용합니다.
+    `c1.customer_id < c2.customer_id` 조건이 (A, B)·(B, A) 중복과 자기 자신과의 쌍 (A, A) 을 한 번에 제거합니다. `<>` 를 쓰면 쌍이 두 번 나옵니다.
+
+- id: JOIN-010
+  title: 함께 출연한 배우 쌍
+  level: 4
+  tags: [SELF JOIN, GROUP BY, 공동 출연]
+  question: |
+    가장 많은 영화에 **함께 출연한** 배우 쌍 5개를 구하세요.
+
+    - 출력: `actor_a`, `actor_b`(각각 "이름 성"), `films_together`
+    - 함께 출연 편수 내림차순, 그다음 두 배우의 actor_id 순 (a 의 id < b 의 id)
+
+    **사용 테이블:** `film_actor`, `actor`
+  solution: |
+    SELECT CONCAT(a1.first_name, ' ', a1.last_name) AS actor_a,
+           CONCAT(a2.first_name, ' ', a2.last_name) AS actor_b,
+           COUNT(*) AS films_together
+    FROM film_actor fa1
+    JOIN film_actor fa2 ON fa2.film_id = fa1.film_id
+                       AND fa2.actor_id > fa1.actor_id
+    JOIN actor a1 ON a1.actor_id = fa1.actor_id
+    JOIN actor a2 ON a2.actor_id = fa2.actor_id
+    GROUP BY fa1.actor_id, fa2.actor_id, a1.first_name, a1.last_name, a2.first_name, a2.last_name
+    ORDER BY films_together DESC, fa1.actor_id, fa2.actor_id
+    LIMIT 5;
+  note: |
+    연결 테이블을 셀프 조인하면 "같은 영화에 나온 두 배우" 를 만들 수 있습니다. 추천 시스템의 **동시 출현(co-occurrence)** 분석과 같은 원리입니다.
+    조인 결과 행 수가 영화당 (배우 수 × 배우 수 / 2) 로 늘어나므로 대용량에서는 비용이 큽니다.
+
+- id: JOIN-011
+  title: 매장 관리자 정보
+  level: 2
+  tags: [다중 조인, 역할이 다른 조인]
+  question: |
+    각 매장의 `store_id`, 관리자 이름 `manager`, 매장 주소 `store_address`, 도시 `city` 를 조회하세요. `store_id` 순.
+
+    **사용 테이블:** `store`, `staff`, `address`, `city`
+  solution: |
+    SELECT st.store_id,
+           CONCAT(sf.first_name, ' ', sf.last_name) AS manager,
+           a.address AS store_address,
+           ci.city
+    FROM store st
+    JOIN staff sf  ON sf.staff_id  = st.manager_staff_id
+    JOIN address a ON a.address_id = st.address_id
+    JOIN city ci   ON ci.city_id   = a.city_id
+    ORDER BY st.store_id;
+  note: |
+    `store` 와 `staff` 는 두 방향으로 연결됩니다: 매장의 관리자(`store.manager_staff_id`)와 직원의 소속 매장(`staff.store_id`).
+    어떤 관계를 따라 조인하는지 **ON 조건으로 명확히** 해야 합니다.
+
+- id: JOIN-012
+  title: 매장 주소와 고객 주소가 같은 나라
+  level: 3
+  tags: [다중 조인, 같은 테이블 두 번]
+  question: |
+    고객이 사는 국가와 그 고객이 등록된 매장(`customer.store_id`)이 있는 국가가 **같은** 고객의 수를 매장별로 구하세요.
+
+    - 출력: `store_id`, `store_country`, `local_customers` — `store_id` 순
+
+    **사용 테이블:** `customer`, `store`, `address`, `city`, `country`
+  solution: |
+    SELECT st.store_id, sco.country AS store_country, COUNT(*) AS local_customers
+    FROM customer c
+    JOIN address ca  ON ca.address_id = c.address_id
+    JOIN city cci    ON cci.city_id   = ca.city_id
+    JOIN store st    ON st.store_id   = c.store_id
+    JOIN address sa  ON sa.address_id = st.address_id
+    JOIN city sci    ON sci.city_id   = sa.city_id
+    JOIN country sco ON sco.country_id = sci.country_id
+    WHERE cci.country_id = sci.country_id
+    GROUP BY st.store_id, sco.country
+    ORDER BY st.store_id;
+  note: |
+    같은 테이블(`address`, `city`)을 **역할별로 다른 별칭**(고객용 `ca`, 매장용 `sa`)으로 두 번 조인했습니다.
+    별칭 이름에 역할을 담으면 긴 조인도 읽기 쉬워집니다.
+
+- id: JOIN-013
+  title: 한 번도 대여하지 않은 장르가 있는 고객
+  level: 4
+  tags: [CROSS JOIN, 안티 조인]
+  question: |
+    고객 1~3번에 대해, 그 고객이 **한 번도 빌리지 않은 장르** 목록을 구하세요.
+
+    - 출력: `customer_id`, `category` — `customer_id`, `category` 순
+
+    **사용 테이블:** `customer`, `category`, `rental`, `inventory`, `film_category`
+  solution: |
+    SELECT c.customer_id, cat.name AS category
+    FROM customer c
+    CROSS JOIN category cat
+    LEFT JOIN (
+        SELECT DISTINCT r.customer_id, fc.category_id
+        FROM rental r
+        JOIN inventory i      ON i.inventory_id = r.inventory_id
+        JOIN film_category fc ON fc.film_id     = i.film_id
+    ) seen ON seen.customer_id = c.customer_id
+          AND seen.category_id = cat.category_id
+    WHERE c.customer_id <= 3
+      AND seen.customer_id IS NULL
+    ORDER BY c.customer_id, category;
+  note: |
+    "없는 조합"을 찾으려면 먼저 **가능한 모든 조합**을 `CROSS JOIN` 으로 만든 뒤, 실제 데이터와 안티 조인합니다.
+    매출 0인 날짜/상품 채우기, 미응답자 찾기 등에 자주 쓰는 패턴입니다.
+
+- id: JOIN-014
+  title: 같은 날 같은 영화를 빌린 고객 쌍
+  level: 3
+  tags: [SELF JOIN, 다중 조건 조인]
+  question: |
+    **2005년 5월** 중 **같은 날짜**에 **같은 영화**(재고는 달라도 됨)를 빌린 서로 다른 두 고객 쌍을 찾으세요.
+
+    - 출력: `rental_day`, `title`, `customer_a`, `customer_b` (a < b)
+    - `rental_day`, `title`, `customer_a`, `customer_b` 순
+
+    **사용 테이블:** `rental`, `inventory`, `film`
+  solution: |
+    SELECT DISTINCT a.rental_day, f.title,
+           a.customer_id AS customer_a, b.customer_id AS customer_b
+    FROM (
+        SELECT DATE(r.rental_date) AS rental_day, i.film_id, r.customer_id
+        FROM rental r
+        JOIN inventory i ON i.inventory_id = r.inventory_id
+        WHERE r.rental_date >= '2005-05-01' AND r.rental_date < '2005-06-01'
+    ) a
+    JOIN (
+        SELECT DATE(r.rental_date) AS rental_day, i.film_id, r.customer_id
+        FROM rental r
+        JOIN inventory i ON i.inventory_id = r.inventory_id
+        WHERE r.rental_date >= '2005-05-01' AND r.rental_date < '2005-06-01'
+    ) b ON b.film_id     = a.film_id
+       AND b.rental_day  = a.rental_day
+       AND b.customer_id > a.customer_id
+    JOIN film f ON f.film_id = a.film_id
+    ORDER BY a.rental_day, f.title, customer_a, customer_b;
+  note: |
+    조인 조건은 여러 개를 `AND` 로 묶을 수 있습니다. 여기서는 "같은 영화 + 같은 날 + 다른 고객(a < b)" 세 조건입니다.
+    재고(DVD)가 같을 필요는 없으므로 대여마다 `film_id` 와 날짜를 먼저 뽑은 **파생 테이블끼리** 셀프 조인했습니다.
+    `rental` 을 직접 셀프 조인하면서 `DATE(r2.rental_date) = DATE(r1.rental_date)` 를 조건으로 걸면 인덱스를 못 타서 수 초가 걸립니다.
+    **셀프 조인은 행 수의 제곱으로 커지므로** 양쪽을 먼저 줄여 두는 것이 핵심입니다.
+    같은 고객이 같은 날 같은 영화를 두 장 빌린 경우 중복 쌍이 생기므로 `DISTINCT` 로 제거했습니다.
+
+- id: JOIN-015
+  title: 비등가 조인으로 등급 매기기
+  level: 3
+  tags: [비등가 조인, BETWEEN JOIN]
+  question: |
+    아래 가격 등급표를 **파생 테이블**로 만들어, 영화를 `replacement_cost` 에 따라 등급별로 집계하세요.
+
+    | tier | 최소 | 최대 |
+    |---|---|---|
+    | 저가 | 0 | 14.99 |
+    | 중가 | 15 | 22.99 |
+    | 고가 | 23 | 99.99 |
+
+    - 출력: `tier`, `films`, `avg_cost`(소수 2자리) — 최소값 순
+
+    **사용 테이블:** `film`
+  solution: |
+    SELECT t.tier, COUNT(*) AS films, ROUND(AVG(f.replacement_cost), 2) AS avg_cost
+    FROM film f
+    JOIN (
+        SELECT '저가' AS tier, 0 AS lo, 14.99 AS hi
+        UNION ALL SELECT '중가', 15, 22.99
+        UNION ALL SELECT '고가', 23, 99.99
+    ) t ON f.replacement_cost BETWEEN t.lo AND t.hi
+    GROUP BY t.tier, t.lo
+    ORDER BY t.lo;
+  note: |
+    조인 조건이 `=` 가 아닌 범위(`BETWEEN`, `<`, `>`)인 것을 **비등가 조인**이라 합니다. 등급표·환율표·세율표 매핑에 씁니다.
+    `UNION ALL` 로 작은 기준표를 즉석에서 만들 수 있습니다 (MySQL 8.0.19+ 는 `VALUES ROW(...)` 문법도 지원).
+
+- id: JOIN-016
+  title: 직원 간 매장 비교 (CROSS JOIN)
+  level: 2
+  tags: [CROSS JOIN, 카테시안 곱]
+  question: |
+    모든 매장 × 모든 등급 조합에 대해, 그 매장이 보유한 해당 등급 영화의 재고 수를 구하세요. 재고가 없는 조합도 0으로 나와야 합니다.
+
+    - 출력: `store_id`, `rating`, `copies` — `store_id`, `rating` 순
+
+    **사용 테이블:** `store`, `film`, `inventory`
+  solution: |
+    SELECT st.store_id, r.rating, COUNT(i.inventory_id) AS copies
+    FROM store st
+    CROSS JOIN (SELECT DISTINCT rating FROM film) r
+    LEFT JOIN film f      ON f.rating    = r.rating
+    LEFT JOIN inventory i ON i.film_id   = f.film_id
+                         AND i.store_id = st.store_id
+    GROUP BY st.store_id, r.rating
+    ORDER BY st.store_id, r.rating;
+  note: |
+    `CROSS JOIN` 은 조건 없이 모든 조합(카테시안 곱)을 만듭니다. 리포트의 "뼈대"를 먼저 만들고 LEFT JOIN 으로 실적을 붙이는 방식입니다.
+
+- id: JOIN-017
+  title: USING 과 NATURAL JOIN
+  level: 2
+  tags: [USING, NATURAL JOIN]
+  question: |
+    `USING` 을 사용해 `film` 과 `film_category`, `category` 를 조인하고 `film_id` 1~5번의 `film_id`, `title`, `name`(장르) 을 조회하세요.
+    `film_id` 순.
+
+    **사용 테이블:** `film`, `film_category`, `category`
+  solution: |
+    SELECT film_id, title, name
+    FROM film
+    JOIN film_category USING (film_id)
+    JOIN category USING (category_id)
+    WHERE film_id <= 5
+    ORDER BY film_id;
+  note: |
+    `USING (col)` 은 양쪽에 같은 이름의 컬럼이 있을 때 `ON a.col = b.col` 을 줄여 씁니다. 결과에서 그 컬럼은 하나로 합쳐집니다.
+    `NATURAL JOIN` 은 **이름이 같은 모든 컬럼**으로 조인하는데, Sakila 는 모든 테이블에 `last_update` 가 있어 의도치 않게 그 컬럼까지 조인 조건이 됩니다. 실무에서는 피하세요.
+
+- id: JOIN-018
+  title: 영화별 재고와 대여 통계
+  level: 3
+  tags: [조인 팬아웃, COUNT DISTINCT]
+  question: |
+    `film_id` 1~10번 영화별로 보유 재고 수 `copies` 와 총 대여 횟수 `rentals` 를 구하세요. 재고가 없는 영화도 0으로 포함합니다.
+
+    - `film_id` 순
+
+    **사용 테이블:** `film`, `inventory`, `rental`
+  solution: |
+    SELECT f.film_id, f.title,
+           COUNT(DISTINCT i.inventory_id) AS copies,
+           COUNT(r.rental_id)             AS rentals
+    FROM film f
+    LEFT JOIN inventory i ON i.film_id      = f.film_id
+    LEFT JOIN rental r    ON r.inventory_id = i.inventory_id
+    WHERE f.film_id <= 10
+    GROUP BY f.film_id, f.title
+    ORDER BY f.film_id;
+  note: |
+    1:N:M 으로 조인하면 상위 테이블 행이 **곱해집니다(팬아웃)**. 재고 1장에 대여 20건이면 재고 행이 20번 나오므로
+    `COUNT(i.inventory_id)` 는 틀리고 `COUNT(DISTINCT i.inventory_id)` 가 맞습니다. SUM 은 DISTINCT 로도 해결되지 않으니 집계 후 조인하세요.
+
+- id: JOIN-019
+  title: 팬아웃으로 부풀려진 매출
+  level: 4
+  tags: [조인 팬아웃, 집계 후 조인]
+  question: |
+    장르별 **실제 매출 합계**와, 출연 배우(`film_actor`)를 함께 조인했을 때 **잘못 부풀려진 합계**를 나란히 구하세요.
+
+    - 출력: `category`, `real_revenue`, `inflated_revenue`, `ratio`(inflated/real, 소수 2자리) — `category` 순
+
+    **사용 테이블:** `payment`, `rental`, `inventory`, `film_category`, `category`, `film_actor`
+  solution: |
+    SELECT r.category, r.real_revenue, x.inflated_revenue,
+           ROUND(x.inflated_revenue / r.real_revenue, 2) AS ratio
+    FROM (
+        SELECT c.name AS category, SUM(p.amount) AS real_revenue
+        FROM payment p
+        JOIN rental rt        ON rt.rental_id   = p.rental_id
+        JOIN inventory i      ON i.inventory_id = rt.inventory_id
+        JOIN film_category fc ON fc.film_id     = i.film_id
+        JOIN category c       ON c.category_id  = fc.category_id
+        GROUP BY c.name
+    ) r
+    JOIN (
+        SELECT c.name AS category, SUM(p.amount) AS inflated_revenue
+        FROM payment p
+        JOIN rental rt        ON rt.rental_id   = p.rental_id
+        JOIN inventory i      ON i.inventory_id = rt.inventory_id
+        JOIN film_category fc ON fc.film_id     = i.film_id
+        JOIN category c       ON c.category_id  = fc.category_id
+        JOIN film_actor fa    ON fa.film_id     = i.film_id
+        GROUP BY c.name
+    ) x ON x.category = r.category
+    ORDER BY r.category;
+  note: |
+    `film_actor` 를 조인하면 결제 1건이 출연 배우 수만큼 복제되어 매출이 **평균 배우 수 배**로 부풀려집니다.
+    "왜 매출이 전사 합계보다 크지?" 의 가장 흔한 원인입니다. 합계를 낼 때는 **집계 단위보다 세분화된 테이블을 조인하지 않도록** 주의하세요.
+
+- id: JOIN-020
+  title: 대여한 직원과 결제받은 직원
+  level: 3
+  tags: [다중 조인, 비교]
+  question: |
+    대여를 처리한 직원(`rental.staff_id`)과 그 대여의 결제를 처리한 직원(`payment.staff_id`)이 **다른** 건수를 구하세요.
+
+    - 출력: `rental_staff`, `payment_staff`, `cnt` — `rental_staff`, `payment_staff` 순 (모든 조합 표시)
+
+    **사용 테이블:** `rental`, `payment`
+  solution: |
+    SELECT r.staff_id AS rental_staff, p.staff_id AS payment_staff, COUNT(*) AS cnt
+    FROM rental r
+    JOIN payment p ON p.rental_id = r.rental_id
+    GROUP BY r.staff_id, p.staff_id
+    ORDER BY rental_staff, payment_staff;
+  note: |
+    문제는 "다른 건수"지만 **모든 조합**을 보여주면 같은 경우·다른 경우를 한눈에 비교할 수 있습니다.
+    데이터 검증 쿼리를 짤 때 이렇게 교차표를 먼저 보는 습관이 유용합니다.
+
+- id: JOIN-021
+  title: 모든 매장에 재고가 있는 영화
+  level: 4
+  tags: [관계 나눗셈, HAVING]
+  question: |
+    **모든 매장**(현재 2곳)에 재고가 있는 영화의 수를 구하세요. 매장 수를 하드코딩하지 마세요.
+
+    - 출력: `films_in_all_stores`
+
+    **사용 테이블:** `inventory`, `store`
+  solution: |
+    SELECT COUNT(*) AS films_in_all_stores
+    FROM (
+        SELECT film_id
+        FROM inventory
+        GROUP BY film_id
+        HAVING COUNT(DISTINCT store_id) = (SELECT COUNT(*) FROM store)
+    ) t;
+  note: |
+    "모든 X 에 대해 Y 인 것" 을 찾는 것을 **관계 나눗셈(relational division)** 이라 합니다.
+    `HAVING COUNT(DISTINCT ...) = (전체 개수)` 패턴이 가장 직관적이고, `NOT EXISTS` 이중 부정으로도 풀 수 있습니다 (SUB 유형 참고).
+
+- id: JOIN-022
+  title: 영화 목록 뷰 활용
+  level: 1
+  tags: [VIEW]
+  question: |
+    Sakila 에 미리 만들어진 뷰 `film_list` 에서 장르가 `Horror` 이고 등급이 `R` 인 영화의 `FID`, `title`, `price`, `actors` 를 조회하세요.
+    `FID` 순.
+
+    **사용 테이블:** `film_list` (뷰)
+  solution: |
+    SELECT FID, title, price, actors
+    FROM film_list
+    WHERE category = 'Horror' AND rating = 'R'
+    ORDER BY FID;
+  note: |
+    **뷰(VIEW)** 는 저장된 SELECT 문입니다. 복잡한 조인을 숨겨 주지만, 내부적으로는 매번 원래 쿼리가 실행됩니다.
+    `SHOW CREATE VIEW film_list;` 로 뷰의 정의를 보고 직접 조인으로 다시 써 보세요.
+
+- id: JOIN-023
+  title: 최근 대여 영화의 다른 출연작
+  level: 4
+  tags: [다중 조인, 추천, DISTINCT]
+  question: |
+    고객 1번이 **가장 최근에 빌린 영화**의 출연 배우들이 출연한 **다른 영화** 중, 고객 1번이 한 번도 빌린 적 없는 영화를 추천하세요.
+
+    - 출력: `film_id`, `title`, `shared_actors`(최근 영화와 겹치는 배우 수)
+    - 겹치는 배우 수 내림차순, `film_id` 순으로 상위 10편
+
+    **사용 테이블:** `rental`, `inventory`, `film_actor`, `film`
+  solution: |
+    SELECT f.film_id, f.title, COUNT(DISTINCT fa2.actor_id) AS shared_actors
+    FROM (
+        SELECT i.film_id
+        FROM rental r
+        JOIN inventory i ON i.inventory_id = r.inventory_id
+        WHERE r.customer_id = 1
+        ORDER BY r.rental_date DESC, r.rental_id DESC
+        LIMIT 1
+    ) last_film
+    JOIN film_actor fa1 ON fa1.film_id  = last_film.film_id
+    JOIN film_actor fa2 ON fa2.actor_id = fa1.actor_id
+                       AND fa2.film_id <> last_film.film_id
+    JOIN film f ON f.film_id = fa2.film_id
+    WHERE NOT EXISTS (
+        SELECT 1
+        FROM rental r2
+        JOIN inventory i2 ON i2.inventory_id = r2.inventory_id
+        WHERE r2.customer_id = 1 AND i2.film_id = f.film_id
+    )
+    GROUP BY f.film_id, f.title
+    ORDER BY shared_actors DESC, f.film_id
+    LIMIT 10;
+  note: |
+    "이 영화를 본 사람에게 같은 배우의 다른 영화를 추천" 하는 간단한 **콘텐츠 기반 추천**입니다.
+    파생 테이블(최근 영화) → 셀프 조인(같은 배우) → 안티 조인(이미 본 영화 제외) → 점수 정렬 순서로 조립했습니다.
+
+- id: JOIN-024
+  title: 배우가 출연한 장르 수
+  level: 2
+  tags: [다중 조인, COUNT DISTINCT]
+  question: |
+    가장 다양한 장르에 출연한 배우 5명의 `actor_id`, `actor`(이름 성), `categories`(출연 장르 수), `films`(출연 편수) 를 구하세요.
+    장르 수 내림차순, 출연 편수 내림차순, `actor_id` 순.
+
+    **사용 테이블:** `actor`, `film_actor`, `film_category`
+  solution: |
+    SELECT a.actor_id,
+           CONCAT(a.first_name, ' ', a.last_name) AS actor,
+           COUNT(DISTINCT fc.category_id) AS categories,
+           COUNT(*) AS films
+    FROM actor a
+    JOIN film_actor fa    ON fa.actor_id = a.actor_id
+    JOIN film_category fc ON fc.film_id  = fa.film_id
+    GROUP BY a.actor_id, a.first_name, a.last_name
+    ORDER BY categories DESC, films DESC, a.actor_id
+    LIMIT 5;
+  note: |
+    `film_category` 는 영화당 1행이라 팬아웃이 없으므로 `COUNT(*)` 가 곧 출연 편수입니다.
+    장르가 여러 개인 구조였다면 `COUNT(DISTINCT fa.film_id)` 로 바꿔야 합니다.
