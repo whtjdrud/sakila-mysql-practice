@@ -15,6 +15,8 @@ st.set_page_config(page_title="Sakila SQL 연습", page_icon=":material/database
 page = st.navigation([
     st.Page("app_pages/problem_list.py", title="문제 목록", icon=":material/list:", default=True),
     st.Page("app_pages/solve.py", title="문제 풀기", icon=":material/edit_note:"),
+    st.Page("app_pages/schema.py", title="스키마 탐색", icon=":material/schema:"),
+    st.Page("app_pages/stats.py", title="학습 통계", icon=":material/insights:"),
 ])
 
 render_sidebar_filters()

@@ -35,6 +35,9 @@ CATEGORIES = [
     ("CTE", "07-cte", "CTE", "WITH · 다단계 CTE · 재귀 CTE"),
     ("WIN", "08-window", "윈도우 함수", "순위 · 누적 · 이동 평균 · LAG/LEAD"),
     ("ADV", "09-advanced", "복합 분석", "코호트 · 리텐션 · 갭/섬 · 실무형 리포트"),
+    ("SQLD", "10-sqld", "SQLD 유형", "SQLD 빈출 개념 · Oracle 문법과의 차이 · EMP 계층 질의"),
+    ("BIZ", "11-business", "실무 요청", "현업 요청서 형식 · 지표 정의 · 추출 · 리포트"),
+    ("FIX", "12-debug", "쿼리 디버깅", "잘못된 쿼리 고치기 · 팬아웃 · NULL · 조인 조건"),
 ]
 CATEGORY_BY_CODE = {c[0]: c for c in CATEGORIES}
 
@@ -80,6 +83,40 @@ def run_query(sql: str) -> pd.DataFrame:
             return pd.DataFrame(list(cur.fetchall()), columns=cols)
     finally:
         conn.close()
+
+
+def run_many(statements: list[str], max_statements: int = 20) -> list[dict]:
+    """여러 문장을 한 연결에서 차례로 실행한다 (세션 변수 유지). 오류가 나면 그 문장에서 멈춘다.
+
+    각 결과: {"sql", "df"(결과셋이 있을 때), "rowcount", "error", "sec"}
+    """
+    import time
+
+    results = []
+    conn = pymysql.connect(**DB, read_timeout=TIMEOUT_MS // 1000 + 5)
+    try:
+        with conn.cursor() as cur:
+            cur.execute(f"SET SESSION MAX_EXECUTION_TIME = {TIMEOUT_MS}")
+            for sql in statements[:max_statements]:
+                sql = sql.strip().rstrip(";").strip()
+                item = {"sql": sql}
+                t = time.perf_counter()
+                try:
+                    cur.execute(sql)
+                    if cur.description is not None:
+                        cols = [c[0] for c in cur.description]
+                        item["df"] = pd.DataFrame(list(cur.fetchall()), columns=cols)
+                    else:
+                        item["rowcount"] = cur.rowcount
+                except pymysql.MySQLError as e:
+                    item["error"] = e.args[-1] if e.args else str(e)
+                item["sec"] = time.perf_counter() - t
+                results.append(item)
+                if "error" in item:
+                    break
+    finally:
+        conn.close()
+    return results
 
 
 def _cell(v) -> str:

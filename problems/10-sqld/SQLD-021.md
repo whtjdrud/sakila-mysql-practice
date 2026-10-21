@@ -1,0 +1,72 @@
+# SQLD-021. EMP 셀프 조인 - 사원과 관리자
+
+**유형:** SQLD 유형 · **난이도:** ★★☆☆☆ 초급 · **태그:** `SELF JOIN` `EMP` `OUTER JOIN`
+
+## 문제
+
+SQLD 단골 테이블 `EMP` 를 CTE 로 만들어 사용합니다. 아래 CTE 를 그대로 복사해 쿼리 앞에 붙이세요.
+
+```sql
+WITH emp(empno, ename, job, mgr, sal, deptno) AS (
+    SELECT 7839,'KING','PRESIDENT',NULL,5000,10 UNION ALL SELECT 7566,'JONES','MANAGER',7839,2975,20
+    UNION ALL SELECT 7698,'BLAKE','MANAGER',7839,2850,30 UNION ALL SELECT 7782,'CLARK','MANAGER',7839,2450,10
+    UNION ALL SELECT 7788,'SCOTT','ANALYST',7566,3000,20 UNION ALL SELECT 7902,'FORD','ANALYST',7566,3000,20
+    UNION ALL SELECT 7369,'SMITH','CLERK',7902,800,20 UNION ALL SELECT 7499,'ALLEN','SALESMAN',7698,1600,30
+    UNION ALL SELECT 7521,'WARD','SALESMAN',7698,1250,30 UNION ALL SELECT 7654,'MARTIN','SALESMAN',7698,1250,30
+    UNION ALL SELECT 7844,'TURNER','SALESMAN',7698,1500,30 UNION ALL SELECT 7900,'JAMES','CLERK',7698,950,30
+    UNION ALL SELECT 7876,'ADAMS','CLERK',7788,1100,20 UNION ALL SELECT 7934,'MILLER','CLERK',7782,1300,10
+)
+```
+
+모든 사원의 이름 `ename`, 관리자 이름 `manager`(없으면 NULL), **관리자보다 급여가 많거나 같은지** `ge_manager`(1/0, 관리자가 없으면 NULL) 를 구하세요.
+`empno` 순.
+
+<details>
+<summary>정답 쿼리 보기</summary>
+
+```sql
+WITH emp(empno, ename, job, mgr, sal, deptno) AS (
+    SELECT 7839,'KING','PRESIDENT',NULL,5000,10 UNION ALL SELECT 7566,'JONES','MANAGER',7839,2975,20
+    UNION ALL SELECT 7698,'BLAKE','MANAGER',7839,2850,30 UNION ALL SELECT 7782,'CLARK','MANAGER',7839,2450,10
+    UNION ALL SELECT 7788,'SCOTT','ANALYST',7566,3000,20 UNION ALL SELECT 7902,'FORD','ANALYST',7566,3000,20
+    UNION ALL SELECT 7369,'SMITH','CLERK',7902,800,20 UNION ALL SELECT 7499,'ALLEN','SALESMAN',7698,1600,30
+    UNION ALL SELECT 7521,'WARD','SALESMAN',7698,1250,30 UNION ALL SELECT 7654,'MARTIN','SALESMAN',7698,1250,30
+    UNION ALL SELECT 7844,'TURNER','SALESMAN',7698,1500,30 UNION ALL SELECT 7900,'JAMES','CLERK',7698,950,30
+    UNION ALL SELECT 7876,'ADAMS','CLERK',7788,1100,20 UNION ALL SELECT 7934,'MILLER','CLERK',7782,1300,10
+)
+SELECT e.ename, m.ename AS manager, e.sal >= m.sal AS ge_manager
+FROM emp e
+LEFT JOIN emp m ON m.empno = e.mgr
+ORDER BY e.empno;
+```
+
+</details>
+
+<details>
+<summary>실행 결과 보기</summary>
+
+| ename | manager | ge_manager |
+|---|---|---|
+| SMITH | FORD | 0.0 |
+| ALLEN | BLAKE | 0.0 |
+| WARD | BLAKE | 0.0 |
+| JONES | KING | 0.0 |
+| MARTIN | BLAKE | 0.0 |
+| BLAKE | KING | 0.0 |
+| CLARK | KING | 0.0 |
+| SCOTT | JONES | 1.0 |
+| KING | nan | nan |
+| TURNER | BLAKE | 0.0 |
+| ADAMS | SCOTT | 0.0 |
+| JAMES | BLAKE | 0.0 |
+| FORD | JONES | 1.0 |
+| MILLER | CLARK | 0.0 |
+
+> 총 14행
+
+</details>
+
+## 해설
+
+사원 테이블의 `mgr` 이 같은 테이블의 `empno` 를 가리키는 **자기 참조** 구조입니다. KING 은 관리자가 없으므로 INNER JOIN 이면 빠집니다 → LEFT JOIN.
+SCOTT·FORD(3000) 는 관리자 JONES(2975) 보다 급여가 많습니다. 시험에서는 "관리자보다 급여가 많은 사원" 문제가 단골입니다.

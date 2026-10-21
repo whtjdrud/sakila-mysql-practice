@@ -1,0 +1,771 @@
+# 실무 요청: 현업 요청서 형식 · 지표 정의 · 추출 · 리포트
+- id: BIZ-001
+  title: 휴면 고객 리스트 추출
+  level: 3
+  tags: [고객 추출, 기준일, 마케팅]
+  question: |
+    > **요청자:** 마케팅팀 · **용도:** 휴면 고객 재방문 이메일 발송
+
+    2005년 데이터만 보고, 기준일 `2005-08-24` 에 **마지막 대여로부터 3일 이상 지난** 활성 고객(`active = 1`) 리스트를 뽑아 주세요.
+
+    **요구 컬럼**
+    - `customer_id`, `name`(이름 성), `email`
+    - `last_rental`(마지막 대여 일시), `days_inactive`(기준일 − 마지막 대여 **날짜**)
+    - `total_paid`(2005년 결제 합계)
+
+    **정렬:** 휴면 일수 내림차순, 결제 합계 내림차순, `customer_id` 순
+  solution: |
+    WITH last AS (
+        SELECT customer_id, MAX(rental_date) AS last_rental
+        FROM rental
+        WHERE rental_date < '2006-01-01'
+        GROUP BY customer_id
+    ), paid AS (
+        SELECT customer_id, SUM(amount) AS total_paid
+        FROM payment
+        WHERE payment_date < '2006-01-01'
+        GROUP BY customer_id
+    )
+    SELECT c.customer_id,
+           CONCAT(c.first_name, ' ', c.last_name) AS name,
+           c.email,
+           l.last_rental,
+           DATEDIFF('2005-08-24', l.last_rental) AS days_inactive,
+           p.total_paid
+    FROM customer c
+    JOIN last l      ON l.customer_id = c.customer_id
+    LEFT JOIN paid p ON p.customer_id = c.customer_id
+    WHERE c.active = 1
+      AND DATEDIFF('2005-08-24', l.last_rental) >= 3
+    ORDER BY days_inactive DESC, total_paid DESC, c.customer_id;
+  note: |
+    실무 추출 요청은 **기준일·기간·대상 조건**을 명확히 해야 합니다. "휴면"이 마지막 대여 기준인지 결제 기준인지, 비활성 고객을 포함할지를 요청자와 먼저 맞추세요.
+    이메일 발송용 리스트라면 `active = 1` 같은 **수신 가능 조건**을 빠뜨리지 않는 것이 중요합니다.
+    결제 합계는 정렬·우선순위용이라 LEFT JOIN 으로 붙였습니다 (결제가 없어도 리스트에서 빠지면 안 됨).
+
+- id: BIZ-002
+  title: VIP 감사 쿠폰 대상자
+  level: 3
+  tags: [NTILE, 상위 %, CRM]
+  question: |
+    > **요청자:** CRM팀 · **용도:** 7월 VIP 감사 쿠폰
+
+    **2005년 7월 결제 합계 상위 10%** 고객에게 쿠폰을 보내려 합니다. 7월에 결제한 고객을 대상으로 `NTILE(10)` 1구간을 VIP 로 정의합니다
+    (합계 내림차순, 동률이면 `customer_id` 순).
+
+    **요구 컬럼:** `customer_id`, `name`, `email`, `july_paid`, `july_payments`(결제 건수)
+
+    **정렬:** `july_paid` 내림차순, `customer_id` 순
+  solution: |
+    WITH july AS (
+        SELECT customer_id, SUM(amount) AS july_paid, COUNT(*) AS july_payments
+        FROM payment
+        WHERE payment_date >= '2005-07-01' AND payment_date < '2005-08-01'
+        GROUP BY customer_id
+    ), ranked AS (
+        SELECT *, NTILE(10) OVER (ORDER BY july_paid DESC, customer_id) AS decile
+        FROM july
+    )
+    SELECT c.customer_id, CONCAT(c.first_name, ' ', c.last_name) AS name, c.email,
+           r.july_paid, r.july_payments
+    FROM ranked r
+    JOIN customer c ON c.customer_id = r.customer_id
+    WHERE r.decile = 1
+    ORDER BY r.july_paid DESC, c.customer_id;
+  note: |
+    "상위 10%" 는 정의가 여러 개입니다: ① 인원 기준 상위 10% (`NTILE`, `ROW_NUMBER <= 0.1 × N`) ② 금액 백분위 90 이상 (`PERCENT_RANK >= 0.9`).
+    ①은 동점자가 경계에서 갈릴 수 있고, ②는 인원이 정확히 10% 가 아닐 수 있습니다. 요청서에 정의를 적어 두면 나중에 "왜 이 사람은 빠졌냐" 는 질문에 답할 수 있습니다.
+
+- id: BIZ-003
+  title: 월간 경영 KPI 리포트
+  level: 3
+  tags: [KPI, 월간 리포트, LAG]
+  question: |
+    > **요청자:** 경영지원팀 · **용도:** 월간 경영회의 자료
+
+    2005-05 ~ 2005-08 의 월별 핵심 지표를 한 표로 주세요.
+
+    | 컬럼 | 정의 |
+    |---|---|
+    | `month` | YYYY-MM |
+    | `rentals` | 그 달 대여 건수 (대여일 기준) |
+    | `revenue` | 그 달 결제 합계 (결제일 기준) |
+    | `active_customers` | 그 달 1회 이상 대여한 고객 수 |
+    | `arpu` | revenue / active_customers (소수 2자리) |
+    | `revenue_mom_pct` | 전월 대비 매출 증감률 % (소수 1자리, 첫 달은 NULL) |
+
+    **정렬:** `month` 순
+  solution: |
+    WITH r AS (
+        SELECT DATE_FORMAT(rental_date, '%Y-%m') AS month,
+               COUNT(*) AS rentals, COUNT(DISTINCT customer_id) AS active_customers
+        FROM rental
+        WHERE rental_date >= '2005-05-01' AND rental_date < '2005-09-01'
+        GROUP BY month
+    ), p AS (
+        SELECT DATE_FORMAT(payment_date, '%Y-%m') AS month, SUM(amount) AS revenue
+        FROM payment
+        WHERE payment_date >= '2005-05-01' AND payment_date < '2005-09-01'
+        GROUP BY month
+    )
+    SELECT r.month, r.rentals, p.revenue, r.active_customers,
+           ROUND(p.revenue / r.active_customers, 2) AS arpu,
+           ROUND(100 * (p.revenue / LAG(p.revenue) OVER (ORDER BY r.month) - 1), 1) AS revenue_mom_pct
+    FROM r
+    JOIN p ON p.month = r.month
+    ORDER BY r.month;
+  note: |
+    대여 건수는 **대여일**, 매출은 **결제일** 기준으로 서로 다른 날짜 컬럼을 씁니다. 월말 대여의 결제가 다음 달에 잡히면 두 지표의 기간이 어긋날 수 있다는 점을 리포트 각주로 남기세요.
+    서로 다른 테이블의 지표는 **각각 월 단위로 집계한 뒤** 조인해야 팬아웃이 생기지 않습니다.
+
+- id: BIZ-004
+  title: 연체 독촉 대상과 예상 연체료
+  level: 4
+  tags: [연체, 비즈니스 규칙, LEAST]
+  question: |
+    > **요청자:** 매장 운영팀 · **용도:** 연체 고객 독촉 전화
+
+    기준 시각 `2006-02-20 00:00:00` 에 **미반납이면서 반납 예정일(대여일 + 대여 기간)이 지난** 대여를 고객별로 정리해 주세요.
+    예상 연체료는 **연체 1일당 1.00, 단 DVD 교체 비용(`replacement_cost`)을 넘지 않음**으로 계산합니다. 연체일은 `DATEDIFF(기준 시각, 반납 예정일)`.
+
+    **요구 컬럼:** `customer_id`, `name`, `phone`, `overdue_items`, `max_overdue_days`, `expected_fee`
+
+    **정렬:** 예상 연체료 내림차순, `customer_id` 순 · **상위 15명**
+  solution: |
+    WITH overdue AS (
+        SELECT r.customer_id,
+               DATEDIFF('2006-02-20 00:00:00', r.rental_date + INTERVAL f.rental_duration DAY) AS overdue_days,
+               f.replacement_cost
+        FROM rental r
+        JOIN inventory i ON i.inventory_id = r.inventory_id
+        JOIN film f      ON f.film_id      = i.film_id
+        WHERE r.return_date IS NULL
+          AND r.rental_date + INTERVAL f.rental_duration DAY < '2006-02-20 00:00:00'
+    )
+    SELECT c.customer_id, CONCAT(c.first_name, ' ', c.last_name) AS name, a.phone,
+           COUNT(*) AS overdue_items,
+           MAX(o.overdue_days) AS max_overdue_days,
+           SUM(LEAST(o.overdue_days * 1.00, o.replacement_cost)) AS expected_fee
+    FROM overdue o
+    JOIN customer c ON c.customer_id = o.customer_id
+    JOIN address a  ON a.address_id  = c.address_id
+    GROUP BY c.customer_id, c.first_name, c.last_name, a.phone
+    ORDER BY expected_fee DESC, c.customer_id
+    LIMIT 15;
+  note: |
+    "1일당 1달러, 최대 교체 비용까지" 같은 **상한이 있는 비즈니스 규칙**은 `LEAST(계산값, 상한)` 으로 표현합니다. 하한은 `GREATEST`.
+    미반납 183건 중 182건은 2006-02-14 대여라, 기준을 02-15 로 잡으면 연체가 1건뿐입니다. 02-20 기준이면 대여 기간이 3~5일인 영화가 연체로 잡혀 118건이 됩니다.
+    "미반납 = 연체" 가 아니라는 점, 그리고 **기준 시각에 따라 대상이 크게 바뀐다**는 점을 요청자에게 설명할 수 있어야 합니다.
+
+- id: BIZ-005
+  title: 매장 간 재고 재배치 추천
+  level: 5
+  tags: [재고, 회전율, 재배치, 다중 CTE]
+  question: |
+    > **요청자:** 물류팀 · **용도:** 다음 주 매장 간 DVD 이동 계획
+
+    같은 영화의 **재고 1장당 대여 횟수(회전율)** 가 매장 간에 크게 다르면, 회전율이 낮은 매장에서 높은 매장으로 1장을 옮기려 합니다.
+
+    **조건**
+    - 두 매장 모두 재고가 있고, 회전율이 낮은 매장의 재고가 **2장 이상**인 영화
+    - 회전율 = 그 매장 재고의 대여 횟수 / 그 매장 재고 장수 (대여 위치는 `inventory.store_id`)
+    - 회전율 차이(높은 쪽 − 낮은 쪽) 상위 10편
+
+    **요구 컬럼:** `title`, `from_store`, `to_store`, `from_copies`, `from_turnover`, `to_turnover`(소수 2자리), `gap`(소수 2자리)
+
+    **정렬:** `gap` 내림차순, `title` 순
+  solution: |
+    WITH inv AS (
+        SELECT store_id, film_id, COUNT(*) AS copies
+        FROM inventory
+        GROUP BY store_id, film_id
+    ), rent AS (
+        SELECT i.store_id, i.film_id, COUNT(*) AS rentals
+        FROM rental r
+        JOIN inventory i ON i.inventory_id = r.inventory_id
+        GROUP BY i.store_id, i.film_id
+    ), turn AS (
+        SELECT inv.store_id, inv.film_id, inv.copies,
+               COALESCE(rent.rentals, 0) / inv.copies AS turnover
+        FROM inv
+        LEFT JOIN rent ON rent.store_id = inv.store_id AND rent.film_id = inv.film_id
+    )
+    SELECT f.title, lo.store_id AS from_store, hi.store_id AS to_store, lo.copies AS from_copies,
+           ROUND(lo.turnover, 2) AS from_turnover, ROUND(hi.turnover, 2) AS to_turnover,
+           ROUND(hi.turnover - lo.turnover, 2) AS gap
+    FROM turn lo
+    JOIN turn hi ON hi.film_id = lo.film_id AND hi.store_id <> lo.store_id AND hi.turnover > lo.turnover
+    JOIN film f  ON f.film_id = lo.film_id
+    WHERE lo.copies >= 2
+    ORDER BY gap DESC, f.title
+    LIMIT 10;
+  note: |
+    재배치 추천은 **(영화 × 매장) 단위의 회전율**을 만든 뒤 같은 영화끼리 셀프 조인해 비교합니다.
+    "재고가 2장 이상일 때만 옮긴다" 같은 **운영 제약**을 조건에 넣지 않으면 마지막 1장을 빼 가는 추천이 나옵니다. 실무 추천 쿼리는 항상 제약 조건을 먼저 확인하세요.
+
+- id: BIZ-006
+  title: 직원 월별 인센티브 계산
+  level: 3
+  tags: [인센티브, 구간 계산, GREATEST]
+  question: |
+    > **요청자:** 인사팀 · **용도:** 2005년 월별 성과급 지급
+
+    직원별·월별 인센티브를 계산해 주세요. 결제 처리 직원(`payment.staff_id`), 결제일 기준.
+
+    - **기본 인센티브** = 처리 결제액의 1%
+    - **건수 보너스** = 처리 건수가 1,000건을 넘으면 초과 1건당 0.10
+    - 2005년만, 금액은 모두 소수 2자리 반올림
+
+    **요구 컬럼:** `month`, `staff_name`, `payments`, `amount`, `base_incentive`, `volume_bonus`, `total_incentive`
+
+    **정렬:** `month`, `staff_name` 순
+  solution: |
+    SELECT DATE_FORMAT(p.payment_date, '%Y-%m') AS month,
+           CONCAT(s.first_name, ' ', s.last_name) AS staff_name,
+           COUNT(*) AS payments,
+           SUM(p.amount) AS amount,
+           ROUND(SUM(p.amount) * 0.01, 2) AS base_incentive,
+           ROUND(GREATEST(COUNT(*) - 1000, 0) * 0.10, 2) AS volume_bonus,
+           ROUND(SUM(p.amount) * 0.01 + GREATEST(COUNT(*) - 1000, 0) * 0.10, 2) AS total_incentive
+    FROM payment p
+    JOIN staff s ON s.staff_id = p.staff_id
+    WHERE p.payment_date < '2006-01-01'
+    GROUP BY month, s.staff_id, s.first_name, s.last_name
+    ORDER BY month, staff_name;
+  note: |
+    "N 초과분" 은 `GREATEST(값 − N, 0)` 이 정석입니다. 그냥 `값 − N` 을 쓰면 실적이 적은 달에 **음수 보너스**가 생깁니다.
+    합계 금액은 **반올림 전 값으로 더한 뒤 반올림**해야 단수 차이가 안 생깁니다 (각각 반올림 후 더하면 1센트 차이 가능).
+
+- id: BIZ-007
+  title: 배우 기획전 후보
+  level: 3
+  tags: [기획전, 대표작, ROW_NUMBER]
+  question: |
+    > **요청자:** MD팀 · **용도:** "이 배우 특별전" 기획
+
+    출연작들의 **총 대여 횟수** 상위 5명의 배우와, 각 배우의 **대표작**(출연작 중 대여 횟수 1위, 동률이면 제목순)을 뽑아 주세요.
+
+    **요구 컬럼:** `actor`, `films`(출연 편수), `total_rentals`, `top_title`, `top_title_rentals`
+
+    **정렬:** `total_rentals` 내림차순, `actor` 순
+  solution: |
+    WITH film_rentals AS (
+        SELECT i.film_id, COUNT(*) AS rentals
+        FROM rental r
+        JOIN inventory i ON i.inventory_id = r.inventory_id
+        GROUP BY i.film_id
+    ), actor_films AS (
+        SELECT fa.actor_id, f.title, COALESCE(fr.rentals, 0) AS rentals,
+               ROW_NUMBER() OVER (PARTITION BY fa.actor_id ORDER BY COALESCE(fr.rentals, 0) DESC, f.title) AS rn
+        FROM film_actor fa
+        JOIN film f ON f.film_id = fa.film_id
+        LEFT JOIN film_rentals fr ON fr.film_id = fa.film_id
+    ), summary AS (
+        SELECT actor_id, COUNT(*) AS films, SUM(rentals) AS total_rentals,
+               MAX(CASE WHEN rn = 1 THEN title END) AS top_title,
+               MAX(CASE WHEN rn = 1 THEN rentals END) AS top_title_rentals
+        FROM actor_films
+        GROUP BY actor_id
+    )
+    SELECT CONCAT(a.first_name, ' ', a.last_name) AS actor, s.films, s.total_rentals, s.top_title, s.top_title_rentals
+    FROM summary s
+    JOIN actor a ON a.actor_id = s.actor_id
+    ORDER BY s.total_rentals DESC, actor
+    LIMIT 5;
+  note: |
+    "배우별 합계"와 "배우별 1위 작품"을 한 행에 담는 전형적인 **요약 + 대표값** 패턴입니다.
+    재고가 없어 대여 0회인 출연작도 편수에는 포함되도록 LEFT JOIN + COALESCE 를 썼습니다. "출연 편수" 가 전체 출연작인지 대여 가능한 작품인지도 확인 포인트입니다.
+
+- id: BIZ-008
+  title: 대여료 조정 후보
+  level: 4
+  tags: [가격 정책, PERCENT_RANK, 후보 추출]
+  question: |
+    > **요청자:** 가격전략팀 · **용도:** 다음 분기 대여료 조정안
+
+    재고가 있는 영화를 대여 횟수로 백분위(`PERCENT_RANK`, 대여 횟수 오름차순)를 매겨 다음 후보를 뽑아 주세요.
+
+    - **인상 후보:** 대여료 0.99 이면서 백분위 0.8 이상 (많이 빌려 감)
+    - **인하 후보:** 대여료 4.99 이면서 백분위 0.2 미만 (거의 안 빌려 감)
+
+    **요구 컬럼:** `proposal`(`인상`/`인하`), `title`, `rental_rate`, `rentals`, `pct_rank`(소수 3자리)
+
+    **정렬:** 인상 → 인하, 그 안에서 `rentals` 내림차순, `title` 순
+  solution: |
+    WITH fr AS (
+        SELECT f.title, f.rental_rate, COUNT(*) AS rentals
+        FROM rental r
+        JOIN inventory i ON i.inventory_id = r.inventory_id
+        JOIN film f      ON f.film_id      = i.film_id
+        GROUP BY f.film_id, f.title, f.rental_rate
+    ), ranked AS (
+        SELECT *, PERCENT_RANK() OVER (ORDER BY rentals) AS pr
+        FROM fr
+    )
+    SELECT CASE WHEN rental_rate = 0.99 THEN '인상' ELSE '인하' END AS proposal,
+           title, rental_rate, rentals, ROUND(pr, 3) AS pct_rank
+    FROM ranked
+    WHERE (rental_rate = 0.99 AND pr >= 0.8)
+       OR (rental_rate = 4.99 AND pr < 0.2)
+    ORDER BY FIELD(proposal, '인상', '인하'), rentals DESC, title;
+  note: |
+    백분위를 **전체 영화 기준**으로 먼저 매긴 뒤 대여료 조건으로 거릅니다. 대여료로 먼저 거르면 "0.99 영화 중 상위 20%" 라는 다른 질문이 됩니다.
+    `PERCENT_RANK` 는 동점에 같은 값을 주므로 경계(0.8) 근처 동점 영화가 함께 포함·제외됩니다.
+
+- id: BIZ-009
+  title: 데이터 품질 점검 리포트
+  level: 4
+  tags: [데이터 품질, UNION ALL, 검증]
+  question: |
+    > **요청자:** 데이터팀 · **용도:** 월간 데이터 품질 점검
+
+    아래 점검 항목별 **위반 건수**를 한 표로 주세요. 위반이 0건인 항목도 표시해야 합니다.
+
+    | check_name | 위반 조건 |
+    |---|---|
+    | `반납일 < 대여일` | rental.return_date < rental.rental_date |
+    | `결제 금액 0 이하` | payment.amount <= 0 |
+    | `대여 없는 결제` | payment.rental_id 가 NULL 이거나 rental 에 없음 |
+    | `결제·대여 고객 불일치` | payment.customer_id ≠ 연결된 rental.customer_id |
+    | `이메일 형식 오류` | customer.email 이 `%_@_%._%` 패턴이 아님 |
+    | `중복 이메일` | 같은 이메일을 쓰는 고객 중 두 번째 이후 (고객 수 − 고유 이메일 수) |
+
+    **요구 컬럼:** `check_name`, `violations` — 위 표 순서
+  solution: |
+    SELECT '반납일 < 대여일' AS check_name, COUNT(*) AS violations
+    FROM rental WHERE return_date < rental_date
+    UNION ALL
+    SELECT '결제 금액 0 이하', COUNT(*) FROM payment WHERE amount <= 0
+    UNION ALL
+    SELECT '대여 없는 결제', COUNT(*) FROM payment p
+    WHERE NOT EXISTS (SELECT 1 FROM rental r WHERE r.rental_id = p.rental_id)
+    UNION ALL
+    SELECT '결제·대여 고객 불일치', COUNT(*) FROM payment p
+    JOIN rental r ON r.rental_id = p.rental_id
+    WHERE p.customer_id <> r.customer_id
+    UNION ALL
+    SELECT '이메일 형식 오류', COUNT(*) FROM customer WHERE email IS NULL OR email NOT LIKE '%_@_%._%'
+    UNION ALL
+    SELECT '중복 이메일', COUNT(*) - COUNT(DISTINCT email) FROM customer;
+  ordered: false
+  note: |
+    품질 점검 쿼리는 **"위반 건수 = 0 이 정상"** 인 형태로 만들어 두면 매일 자동 실행해 0 이 아닌 항목만 알림을 보내기 좋습니다.
+    `COUNT(*)` 는 조건에 맞는 행이 없어도 0 을 돌려주므로 UNION ALL 로 이어 붙이면 0건 항목도 자연스럽게 표시됩니다.
+    (이 문제는 행 순서를 채점하지 않습니다.)
+
+- id: BIZ-010
+  title: 해외 확장 후보 국가
+  level: 3
+  tags: [시장 분석, 1인당 매출, HAVING]
+  question: |
+    > **요청자:** 전략기획팀 · **용도:** 신규 매장 후보 국가 선정
+
+    고객이 **10명 이상**인 국가 중 **고객 1인당 매출**이 높은 5개국을 뽑아 주세요.
+
+    **요구 컬럼:** `country`, `customers`, `revenue`, `revenue_per_customer`(소수 2자리), `rentals_per_customer`(소수 2자리)
+
+    **정렬:** `revenue_per_customer` 내림차순, `country` 순
+  solution: |
+    WITH cust AS (
+        SELECT c.customer_id, co.country
+        FROM customer c
+        JOIN address a  ON a.address_id  = c.address_id
+        JOIN city ci    ON ci.city_id    = a.city_id
+        JOIN country co ON co.country_id = ci.country_id
+    ), rev AS (
+        SELECT customer_id, SUM(amount) AS paid FROM payment GROUP BY customer_id
+    ), rent AS (
+        SELECT customer_id, COUNT(*) AS rentals FROM rental GROUP BY customer_id
+    )
+    SELECT cu.country, COUNT(*) AS customers, SUM(rv.paid) AS revenue,
+           ROUND(SUM(rv.paid) / COUNT(*), 2) AS revenue_per_customer,
+           ROUND(SUM(rt.rentals) / COUNT(*), 2) AS rentals_per_customer
+    FROM cust cu
+    JOIN rev rv  ON rv.customer_id = cu.customer_id
+    JOIN rent rt ON rt.customer_id = cu.customer_id
+    GROUP BY cu.country
+    HAVING COUNT(*) >= 10
+    ORDER BY revenue_per_customer DESC, cu.country
+    LIMIT 5;
+  note: |
+    "최소 표본 수(10명 이상)" 조건은 **작은 국가의 우연한 고액 고객 1명**이 순위를 왜곡하는 것을 막습니다. 비율 지표 순위에는 항상 최소 표본 조건을 두세요.
+
+- id: BIZ-011
+  title: 주간 리포트 (전주 대비)
+  level: 3
+  tags: [주간, YEARWEEK, WoW]
+  question: |
+    > **요청자:** 영업팀 · **용도:** 주간 회의
+
+    2005년 7~8월의 **주별**(월요일 시작) 대여 건수와 전주 대비 증감을 주세요. 대여가 있는 주만 표시합니다.
+
+    **요구 컬럼:** `week_start`(그 주 월요일 날짜), `rentals`, `prev_rentals`, `wow_pct`(소수 1자리)
+
+    **정렬:** `week_start` 순
+  solution: |
+    WITH w AS (
+        SELECT DATE(rental_date) - INTERVAL WEEKDAY(rental_date) DAY AS week_start, COUNT(*) AS rentals
+        FROM rental
+        WHERE rental_date >= '2005-07-01' AND rental_date < '2005-09-01'
+        GROUP BY week_start
+    )
+    SELECT week_start, rentals,
+           LAG(rentals) OVER (ORDER BY week_start) AS prev_rentals,
+           ROUND(100 * (rentals / LAG(rentals) OVER (ORDER BY week_start) - 1), 1) AS wow_pct
+    FROM w
+    ORDER BY week_start;
+  note: |
+    주 시작일은 `날짜 − WEEKDAY(날짜)`(월요일=0) 로 구하면 사람이 읽기 좋은 날짜가 됩니다. `YEARWEEK()` 는 숫자(202527)라 리포트에는 불친절합니다.
+    ⚠️ 결과를 보면 07-18 주와 08-08 주가 **통째로 없습니다**(대여 0건). 그래서 LAG 의 "전주" 가 실제로는 2주 전이 되어 WoW 가 왜곡됩니다.
+    또 주마다 데이터가 있는 날 수가 달라 건수 자체가 크게 출렁입니다. 실무라면 주 달력을 먼저 만들어 빈 주를 0으로 채우고(CTE-006 참고), 주당 데이터 일수도 함께 보고해야 합니다.
+
+- id: BIZ-012
+  title: 고객 등급제 시뮬레이션
+  level: 3
+  tags: [등급, CASE, 매출 비중]
+  question: |
+    > **요청자:** CRM팀 · **용도:** 멤버십 등급 기준 검토
+
+    누적 결제액으로 등급을 나눴을 때 등급별 인원과 매출 비중을 보고 싶습니다.
+
+    | 등급 | 누적 결제액 |
+    |---|---|
+    | PLATINUM | 180 이상 |
+    | GOLD | 140 이상 |
+    | SILVER | 100 이상 |
+    | BRONZE | 그 외 |
+
+    **요구 컬럼:** `tier`, `customers`, `customer_pct`, `revenue`, `revenue_pct` (% 는 소수 1자리)
+
+    **정렬:** PLATINUM → GOLD → SILVER → BRONZE
+  solution: |
+    WITH t AS (
+        SELECT customer_id, SUM(amount) AS paid,
+               CASE WHEN SUM(amount) >= 180 THEN 'PLATINUM'
+                    WHEN SUM(amount) >= 140 THEN 'GOLD'
+                    WHEN SUM(amount) >= 100 THEN 'SILVER'
+                    ELSE 'BRONZE' END AS tier
+        FROM payment
+        GROUP BY customer_id
+    )
+    SELECT tier, COUNT(*) AS customers,
+           ROUND(100 * COUNT(*) / SUM(COUNT(*)) OVER (), 1) AS customer_pct,
+           SUM(paid) AS revenue,
+           ROUND(100 * SUM(paid) / SUM(SUM(paid)) OVER (), 1) AS revenue_pct
+    FROM t
+    GROUP BY tier
+    ORDER BY FIELD(tier, 'PLATINUM', 'GOLD', 'SILVER', 'BRONZE');
+  note: |
+    등급 기준을 정할 때는 **"상위 등급이 인원의 몇 %, 매출의 몇 %"** 인지가 핵심 판단 자료입니다. 인원 대비 매출 비중이 클수록 등급 혜택의 효율이 좋습니다.
+    기준값만 바꿔 여러 번 돌려 보며 비교하는 시뮬레이션에는 CASE 를 CTE 한 곳에 모아 두는 구조가 편합니다.
+
+- id: BIZ-013
+  title: 피크 시간대 인력 배치
+  level: 4
+  tags: [요일, 시간대, 평균, 운영]
+  question: |
+    > **요청자:** 매장 운영팀 · **용도:** 아르바이트 근무표 작성
+
+    **요일 × 시간대**별 **하루 평균** 대여 건수를 구해, 가장 바쁜 5개 슬롯을 알려 주세요.
+    평균의 분모는 "그 요일 중 대여가 1건 이상 있었던 날의 수" 입니다 (2006년 제외).
+
+    **요구 컬럼:** `day_name`, `hour`, `days`(분모 날짜 수), `total_rentals`, `avg_per_day`(소수 1자리)
+
+    **정렬:** `avg_per_day` 내림차순, `day_name`, `hour` 순
+  solution: |
+    WITH base AS (
+        SELECT DATE(rental_date) AS d, DAYNAME(rental_date) AS day_name, HOUR(rental_date) AS hour
+        FROM rental
+        WHERE rental_date < '2006-01-01'
+    ), days AS (
+        SELECT day_name, COUNT(DISTINCT d) AS days FROM base GROUP BY day_name
+    )
+    SELECT b.day_name, b.hour, dy.days, COUNT(*) AS total_rentals,
+           ROUND(COUNT(*) / dy.days, 1) AS avg_per_day
+    FROM base b
+    JOIN days dy ON dy.day_name = b.day_name
+    GROUP BY b.day_name, b.hour, dy.days
+    ORDER BY avg_per_day DESC, b.day_name, b.hour
+    LIMIT 5;
+  note: |
+    "합계"로 비교하면 데이터에 많이 등장한 요일이 유리합니다. **하루 평균**으로 바꿔야 요일 간 공정 비교가 됩니다.
+    분모를 "그 요일·시간대에 대여가 있었던 날" 로 잡으면 0건인 날이 빠져 평균이 부풀려집니다 — 그래서 분모는 요일 단위로 따로 셌습니다.
+
+- id: BIZ-014
+  title: 장르별 재고 적정성
+  level: 3
+  tags: [재고 점유율, 수요 점유율, 비교]
+  question: |
+    > **요청자:** 구매팀 · **용도:** 다음 분기 장르별 구매 예산 배분
+
+    장르별 **재고 점유율**(전체 재고 중 비율)과 **대여 점유율**(전체 대여 중 비율)을 비교해, 차이(대여 − 재고, %p)를 주세요.
+    양수면 수요 대비 재고가 부족한 장르입니다.
+
+    **요구 컬럼:** `category`, `stock_pct`, `rental_pct`, `gap_pp` (모두 소수 2자리), `judgement`(`부족` gap ≥ 0.3 / `과잉` gap ≤ −0.3 / `적정`)
+
+    **정렬:** `gap_pp` 내림차순, `category` 순
+  solution: |
+    WITH s AS (
+        SELECT fc.category_id, COUNT(*) AS copies
+        FROM inventory i JOIN film_category fc ON fc.film_id = i.film_id
+        GROUP BY fc.category_id
+    ), r AS (
+        SELECT fc.category_id, COUNT(*) AS rentals
+        FROM rental rt
+        JOIN inventory i      ON i.inventory_id = rt.inventory_id
+        JOIN film_category fc ON fc.film_id     = i.film_id
+        GROUP BY fc.category_id
+    ), x AS (
+        SELECT c.name AS category,
+               100 * s.copies  / SUM(s.copies)  OVER () AS stock_pct,
+               100 * r.rentals / SUM(r.rentals) OVER () AS rental_pct
+        FROM category c
+        JOIN s ON s.category_id = c.category_id
+        JOIN r ON r.category_id = c.category_id
+    )
+    SELECT category, ROUND(stock_pct, 2) AS stock_pct, ROUND(rental_pct, 2) AS rental_pct,
+           ROUND(rental_pct - stock_pct, 2) AS gap_pp,
+           CASE WHEN rental_pct - stock_pct >= 0.3 THEN '부족'
+                WHEN rental_pct - stock_pct <= -0.3 THEN '과잉'
+                ELSE '적정' END AS judgement
+    FROM x
+    ORDER BY gap_pp DESC, category;
+  note: |
+    비율끼리의 차이는 **%p(퍼센트포인트)** 입니다. "5% 에서 6%" 는 1%p 증가이자 20% 증가 — 리포트에서 둘을 혼동하지 마세요.
+    판정 기준(±0.3%p)은 반올림 전 값으로 비교해야 경계에서 표시값과 판정이 어긋나지 않습니다.
+
+- id: BIZ-015
+  title: 액션 신작 안내 대상
+  level: 4
+  tags: [선호 장르, 비중, 타깃팅]
+  question: |
+    > **요청자:** 마케팅팀 · **용도:** 액션 신작 입고 안내 문자
+
+    다음 조건을 모두 만족하는 활성 고객을 뽑아 주세요.
+
+    - 2005-08-01 이후(2006년 제외) 대여가 있음
+    - 전체 대여 중 **Action 비중 15% 이상**
+    - 전체 대여 **20회 이상** (비중이 우연히 높은 소수 대여 고객 제외)
+
+    **요구 컬럼:** `customer_id`, `name`, `rentals`, `action_rentals`, `action_pct`(소수 1자리)
+
+    **정렬:** `action_pct` 내림차순, `customer_id` 순
+  solution: |
+    WITH r AS (
+        SELECT rt.customer_id, rt.rental_date, c.name AS category
+        FROM rental rt
+        JOIN inventory i      ON i.inventory_id = rt.inventory_id
+        JOIN film_category fc ON fc.film_id     = i.film_id
+        JOIN category c       ON c.category_id  = fc.category_id
+    ), agg AS (
+        SELECT customer_id, COUNT(*) AS rentals,
+               SUM(category = 'Action') AS action_rentals,
+               MAX(rental_date >= '2005-08-01' AND rental_date < '2006-01-01') AS recent
+        FROM r
+        GROUP BY customer_id
+    )
+    SELECT a.customer_id, CONCAT(cu.first_name, ' ', cu.last_name) AS name,
+           a.rentals, a.action_rentals, ROUND(100 * a.action_rentals / a.rentals, 1) AS action_pct
+    FROM agg a
+    JOIN customer cu ON cu.customer_id = a.customer_id
+    WHERE cu.active = 1
+      AND a.recent = 1
+      AND a.rentals >= 20
+      AND a.action_rentals / a.rentals >= 0.15
+    ORDER BY action_pct DESC, a.customer_id;
+  note: |
+    `MAX(조건)` 은 "한 번이라도 조건을 만족했는가" (존재 여부) 를 집계 안에서 판정하는 트릭입니다. EXISTS 서브쿼리를 따로 쓰지 않아도 됩니다.
+    타깃팅 조건은 **최근성 + 선호도 + 최소 활동량** 의 조합이 기본입니다.
+
+- id: BIZ-016
+  title: 두 매장 운영 지표 비교표
+  level: 4
+  tags: [매장 비교, 언피벗, 지표 정의]
+  question: |
+    > **요청자:** 대표이사 · **용도:** "두 매장 중 어디가 더 잘 운영되나?"
+
+    두 매장(재고 `inventory.store_id` 기준)의 지표를 **행 = 지표, 열 = 매장** 형태로 주세요.
+
+    | metric | 정의 |
+    |---|---|
+    | `대여 건수` | 대여 수 |
+    | `건당 매출` | 대여에 연결된 결제 합계 / 대여 수 (소수 2자리) |
+    | `고객당 대여` | 대여 수 / 고유 고객 수 (소수 2자리) |
+    | `연체율(%)` | 반납된 대여 중 대여 기간 초과 비율 (소수 1자리) |
+    | `평균 대여일` | 반납된 대여의 평균 `DATEDIFF` (소수 2자리) |
+
+    **요구 컬럼:** `metric`, `store_1`, `store_2` — 위 표 순서
+  solution: |
+    WITH base AS (
+        SELECT i.store_id, r.rental_id, r.customer_id, r.rental_date, r.return_date, f.rental_duration
+        FROM rental r
+        JOIN inventory i ON i.inventory_id = r.inventory_id
+        JOIN film f      ON f.film_id      = i.film_id
+    ), pay AS (
+        SELECT b.store_id, SUM(p.amount) AS revenue
+        FROM base b JOIN payment p ON p.rental_id = b.rental_id
+        GROUP BY b.store_id
+    ), m AS (
+        SELECT b.store_id,
+               COUNT(*) AS rentals,
+               ROUND(pay.revenue / COUNT(*), 2) AS rev_per_rental,
+               ROUND(COUNT(*) / COUNT(DISTINCT b.customer_id), 2) AS rentals_per_customer,
+               ROUND(100 * AVG(CASE WHEN b.return_date IS NOT NULL
+                                    THEN DATEDIFF(b.return_date, b.rental_date) > b.rental_duration END), 1) AS late_pct,
+               ROUND(AVG(DATEDIFF(b.return_date, b.rental_date)), 2) AS avg_days
+        FROM base b
+        JOIN pay ON pay.store_id = b.store_id
+        GROUP BY b.store_id, pay.revenue
+    )
+    SELECT '대여 건수' AS metric, SUM(IF(store_id = 1, rentals, 0)) AS store_1, SUM(IF(store_id = 2, rentals, 0)) AS store_2 FROM m
+    UNION ALL SELECT '건당 매출', SUM(IF(store_id = 1, rev_per_rental, 0)), SUM(IF(store_id = 2, rev_per_rental, 0)) FROM m
+    UNION ALL SELECT '고객당 대여', SUM(IF(store_id = 1, rentals_per_customer, 0)), SUM(IF(store_id = 2, rentals_per_customer, 0)) FROM m
+    UNION ALL SELECT '연체율(%)', SUM(IF(store_id = 1, late_pct, 0)), SUM(IF(store_id = 2, late_pct, 0)) FROM m
+    UNION ALL SELECT '평균 대여일', SUM(IF(store_id = 1, avg_days, 0)), SUM(IF(store_id = 2, avg_days, 0)) FROM m;
+  note: |
+    경영진 보고용 비교표는 **지표가 행, 비교 대상이 열**인 형태가 읽기 쉽습니다. 매장별 지표를 한 번 계산한 뒤(`m`) 언피벗(UNION ALL) + 피벗(조건부 합)으로 모양을 바꿨습니다.
+    "어디가 더 잘 운영되나" 같은 모호한 질문은 이렇게 **지표 정의표로 바꿔서** 합의하는 것이 분석가의 첫 번째 일입니다.
+
+- id: BIZ-017
+  title: 장기 미반납 손실 재고
+  level: 3
+  tags: [손실, 재무, 기준일]
+  question: |
+    > **요청자:** 재무팀 · **용도:** 분실 처리(손상 처리) 대상 금액 산정
+
+    기준일 `2006-02-15` 에 **대여 후 90일 넘게** 반납되지 않은 DVD 를 분실로 보고, 매장(재고 기준)별 장수와 교체 비용 합계를 주세요.
+
+    **요구 컬럼:** `store_id`, `lost_copies`, `replacement_total`, `oldest_rental`
+
+    **정렬:** `store_id` 순
+  solution: |
+    SELECT i.store_id,
+           COUNT(*) AS lost_copies,
+           SUM(f.replacement_cost) AS replacement_total,
+           MIN(r.rental_date) AS oldest_rental
+    FROM rental r
+    JOIN inventory i ON i.inventory_id = r.inventory_id
+    JOIN film f      ON f.film_id      = i.film_id
+    WHERE r.return_date IS NULL
+      AND r.rental_date < '2006-02-15' - INTERVAL 90 DAY
+    GROUP BY i.store_id
+    ORDER BY i.store_id;
+  note: |
+    기준일에서 90일을 **빼서 비교 값**으로 만들면(`rental_date < 기준일 − 90일`) 컬럼에 함수를 씌우지 않아 인덱스를 쓸 수 있습니다.
+    `DATEDIFF('2006-02-15', rental_date) > 90` 도 결과는 같지만 대용량에서 느립니다.
+    결과는 2번 매장의 **단 1장**입니다 — 미반납 183건 중 182건이 2006-02-14 대여라 90일 기준에 걸리지 않습니다. 결과가 작으면 "정말 그런가" 를 원천 데이터로 확인하는 습관을 들이세요.
+
+- id: BIZ-018
+  title: 신규 고객 2주 내 재방문율
+  level: 4
+  tags: [온보딩, 재방문, 첫 대여]
+  question: |
+    > **요청자:** 그로스팀 · **용도:** 신규 고객 온보딩 개선
+
+    고객의 **첫 대여 매장**(재고 기준)별로, 첫 대여 후 **14일 이내**(첫 대여 시각 초과 ~ 14일 이하)에 다시 대여한 고객의 비율을 구해 주세요.
+
+    **요구 컬럼:** `first_store`, `new_customers`, `returned_14d`, `return_rate_pct`(소수 1자리)
+
+    **정렬:** `first_store` 순
+  solution: |
+    WITH ordered AS (
+        SELECT r.customer_id, r.rental_date, i.store_id,
+               ROW_NUMBER() OVER (PARTITION BY r.customer_id ORDER BY r.rental_date, r.rental_id) AS rn
+        FROM rental r
+        JOIN inventory i ON i.inventory_id = r.inventory_id
+    ), firsts AS (
+        SELECT customer_id, rental_date AS first_at, store_id AS first_store
+        FROM ordered WHERE rn = 1
+    )
+    SELECT f.first_store,
+           COUNT(*) AS new_customers,
+           SUM(EXISTS (SELECT 1 FROM rental r2
+                        WHERE r2.customer_id = f.customer_id
+                          AND r2.rental_date > f.first_at
+                          AND r2.rental_date <= f.first_at + INTERVAL 14 DAY)) AS returned_14d,
+           ROUND(100 * AVG(EXISTS (SELECT 1 FROM rental r2
+                        WHERE r2.customer_id = f.customer_id
+                          AND r2.rental_date > f.first_at
+                          AND r2.rental_date <= f.first_at + INTERVAL 14 DAY)), 1) AS return_rate_pct
+    FROM firsts f
+    GROUP BY f.first_store
+    ORDER BY f.first_store;
+  note: |
+    `EXISTS(...)` 는 MySQL 에서 1/0 값이라 `SUM`, `AVG` 안에 넣어 비율을 바로 구할 수 있습니다.
+    "첫 대여와 같은 시각의 두 번째 대여" 는 재방문이 아니므로 `> first_at` (초과) 로 정의했습니다 — 같은 방문에서 여러 장 빌린 경우를 재방문으로 세지 않기 위해서입니다.
+
+- id: BIZ-019
+  title: 월별 고객 유지율
+  level: 3
+  tags: [리텐션, 월간, EXISTS]
+  question: |
+    > **요청자:** 경영지원팀 · **용도:** 고객 유지율 KPI
+
+    각 달(2005-05 ~ 2005-07)의 활동 고객(1회 이상 대여) 중 **다음 달에도 활동한** 고객 비율을 구해 주세요.
+
+    **요구 컬럼:** `month`(YYYY-MM), `active_customers`, `retained_next_month`, `retention_pct`(소수 1자리)
+
+    **정렬:** `month` 순
+  solution: |
+    WITH act AS (
+        SELECT DISTINCT customer_id, DATE_FORMAT(rental_date, '%Y-%m-01') AS m
+        FROM rental
+    )
+    SELECT DATE_FORMAT(a.m, '%Y-%m') AS month,
+           COUNT(*) AS active_customers,
+           SUM(EXISTS (SELECT 1 FROM act b
+                        WHERE b.customer_id = a.customer_id
+                          AND b.m = DATE_FORMAT(a.m + INTERVAL 1 MONTH, '%Y-%m-01'))) AS retained_next_month,
+           ROUND(100 * AVG(EXISTS (SELECT 1 FROM act b
+                        WHERE b.customer_id = a.customer_id
+                          AND b.m = DATE_FORMAT(a.m + INTERVAL 1 MONTH, '%Y-%m-01'))), 1) AS retention_pct
+    FROM act a
+    WHERE a.m BETWEEN '2005-05-01' AND '2005-07-01'
+    GROUP BY a.m
+    ORDER BY a.m;
+  note: |
+    리텐션의 분모는 **"이번 달 활동 고객"**, 분자는 "그중 다음 달에도 활동한 고객" 입니다. 다음 달 전체 활동 고객 수로 나누면 다른 지표가 됩니다.
+    2005-08 은 다음 달(9월) 데이터가 없어 0% 가 되므로 기간에서 제외했습니다 — "데이터가 없는 기간"을 지표에 넣지 않는 것도 정의의 일부입니다.
+
+- id: BIZ-020
+  title: 교차 판매 - Action 고객이 함께 보는 장르
+  level: 4
+  tags: [교차 판매, 고객 비율, 장바구니]
+  question: |
+    > **요청자:** MD팀 · **용도:** Action 코너 옆에 둘 장르 결정
+
+    Action 영화를 **한 번이라도** 빌린 고객들이, Action 외에 **가장 많이 빌린 고객 수 기준** 상위 3개 장르를 알려 주세요.
+    비교를 위해 **전체 고객** 중 그 장르를 빌린 고객 비율도 함께 주세요.
+
+    **요구 컬럼:** `category`, `action_customers_pct`(Action 고객 중 해당 장르를 빌린 비율), `all_customers_pct`, `lift`(앞 ÷ 뒤, 소수 2자리) — 비율은 소수 1자리
+
+    **정렬:** `action_customers_pct` 내림차순, `category` 순 · 상위 3개
+  solution: |
+    WITH cc AS (
+        SELECT DISTINCT r.customer_id, c.name AS category
+        FROM rental r
+        JOIN inventory i      ON i.inventory_id = r.inventory_id
+        JOIN film_category fc ON fc.film_id     = i.film_id
+        JOIN category c       ON c.category_id  = fc.category_id
+    ), flag AS (
+        SELECT customer_id, MAX(category = 'Action') AS is_action
+        FROM cc
+        GROUP BY customer_id
+    ), totals AS (
+        SELECT SUM(is_action) AS n_action, COUNT(*) AS n_all FROM flag
+    )
+    SELECT cc.category,
+           ROUND(100 * SUM(f.is_action) / t.n_action, 1) AS action_customers_pct,
+           ROUND(100 * COUNT(*) / t.n_all, 1) AS all_customers_pct,
+           ROUND((SUM(f.is_action) / t.n_action) / (COUNT(*) / t.n_all), 2) AS lift
+    FROM cc
+    JOIN flag f ON f.customer_id = cc.customer_id
+    CROSS JOIN totals t
+    WHERE cc.category <> 'Action'
+    GROUP BY cc.category, t.n_action, t.n_all
+    ORDER BY action_customers_pct DESC, cc.category
+    LIMIT 3;
+  note: |
+    "Action 고객의 90% 가 Drama 도 빌렸다" 는 그 자체로는 의미가 약합니다. **전체 고객도 88% 가 Drama 를 빌렸다면** 연관이 거의 없는 것이죠.
+    그래서 기준선(`all_customers_pct`) 대비 배수인 **lift** 를 함께 보고해야 합니다. Sakila 처럼 고객당 대여가 많은 데이터에서는 대부분의 장르 비율이 높게 나옵니다.
+    고객마다 "Action 고객인가" 플래그(`MAX(category = 'Action')`)를 먼저 만들어 조인하면, 분자·분모를 같은 기준으로 셀 수 있습니다.
