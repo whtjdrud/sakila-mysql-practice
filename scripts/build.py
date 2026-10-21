@@ -128,6 +128,18 @@ python scripts/build.py       # 모든 풀이 실행 → README 재생성
 python scripts/build.py --push  # 빌드 후 GitHub 에 커밋/푸시
 ```
 
+## 웹에서 직접 풀기
+
+```bash
+pip install -r requirements.txt
+streamlit run streamlit_app.py   # http://localhost:8501
+```
+
+- 왼쪽에서 문제를 고르고, SQL 을 작성해 **실행** / **제출(채점)** 합니다.
+- 채점은 정답 쿼리 결과와 값·행 수·정렬 순서를 비교합니다.
+- 맞히면 정답 쿼리와 해설이 열리고, 푼 문제는 `progress.json` 에 기록됩니다.
+- 앱은 SELECT 만 가능한 읽기 전용 계정(`learner`)으로 접속하므로 데이터가 바뀌지 않습니다.
+
 ## Sakila 주요 테이블
 
 | 테이블 | 설명 |
